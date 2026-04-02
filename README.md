@@ -67,13 +67,17 @@ Not promised yet:
 
 ## Install
 
-GitHub install path:
+Planned npm install path once published:
+
+```bash
+pi install npm:pi-oracle
+```
+
+Current GitHub install path:
 
 ```bash
 pi install https://github.com/fitchmultz/pi-oracle
 ```
-
-npm install path is planned, but not published yet.
 
 ## First-time setup
 
