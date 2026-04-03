@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type OracleConfig } from "../extensions/oracle/lib/config.ts";
+import { ensureAccountCookie, filterImportableAuthCookies } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
 import {
   createJob,
   getJobDir,
@@ -188,6 +189,36 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   await cleanupJob(jobId);
 }
 
+function testAuthCookiePolicy(): void {
+  const rawCookies = [
+    { name: "__Secure-next-auth.session-token.0", value: "session-a", domain: ".chatgpt.com", path: "/", secure: true, httpOnly: true, sameSite: "Lax" },
+    { name: "oai-client-auth-info", value: "info", domain: "auth.openai.com", path: "/", secure: true, sameSite: "Lax" },
+    { name: "_account_is_fedramp", value: "1", domain: "chatgpt.com", path: "/", secure: false, sameSite: "Lax" },
+    { name: "_ga", value: "analytics", domain: "chatgpt.com", path: "/" },
+    { name: "__cf_bm", value: "bot", domain: "auth.openai.com", path: "/", secure: true },
+    { name: "totally_unknown_cookie", value: "mystery", domain: "chatgpt.com", path: "/" },
+    { name: "oai-client-auth-info", value: "evil", domain: "evil.example", path: "/", secure: true, sameSite: "Lax" },
+  ];
+
+  const filtered = filterImportableAuthCookies(rawCookies, "https://chatgpt.com/");
+  const keptNames = filtered.cookies.map((cookie) => `${cookie.name}@${cookie.domain}`).sort();
+  const droppedReasons = filtered.dropped.map(({ reason }) => reason).sort();
+
+  assert(keptNames.includes("__Secure-next-auth.session-token.0@chatgpt.com"), "session token cookie should be kept");
+  assert(keptNames.includes("oai-client-auth-info@auth.openai.com"), "auth cookie should be kept");
+  assert(keptNames.includes("_account_is_fedramp@chatgpt.com"), "fedramp marker should be kept");
+  assert(!keptNames.some((name) => name.startsWith("_ga@")), "analytics cookie should be dropped");
+  assert(!keptNames.some((name) => name.startsWith("__cf_bm@")), "bot-management cookie should be dropped");
+  assert(droppedReasons.includes("noise"), "expected noise cookies to be classified and dropped");
+  assert(droppedReasons.includes("non-auth"), "expected unknown cookies to be classified and dropped");
+  assert(droppedReasons.includes("foreign-domain"), "expected foreign-domain cookies to be classified and dropped");
+
+  const ensured = ensureAccountCookie(filtered.cookies, "https://chatgpt.com/");
+  const synthesizedAccount = ensured.cookies.find((cookie) => cookie.name === "_account");
+  assert(ensured.synthesized, "missing _account cookie should be synthesized");
+  assert(synthesizedAccount?.value === "fedramp", "fedramp marker should synthesize fedramp account value");
+}
+
 async function testStaleLockRecovery(): Promise<void> {
   await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
   await acquireLock("reconcile", "global", { processPid: 999_999_999, source: "oracle-sanity-stale-lock" });
@@ -235,6 +266,7 @@ async function main() {
     browser: { ...DEFAULT_CONFIG.browser, maxConcurrentJobs: 1 },
   };
 
+  testAuthCookiePolicy();
   await testRuntimeConversationLeases(config);
   await testNotificationClaims(config);
   await testPollerNotification(config);

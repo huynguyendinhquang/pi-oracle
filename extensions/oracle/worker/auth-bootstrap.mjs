@@ -5,6 +5,7 @@ import { appendFile, chmod, lstat, mkdir, readFile, rename, rm, writeFile } from
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
+import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 
 const rawConfig = process.argv[2];
 if (!rawConfig) {
@@ -367,42 +368,6 @@ function stripQuery(url) {
   }
 }
 
-function normalizeSameSite(value) {
-  if (value === "Lax" || value === "Strict" || value === "None") return value;
-  return undefined;
-}
-
-function normalizeExpiration(expires) {
-  if (!expires || Number.isNaN(expires)) return undefined;
-  const value = Number(expires);
-  if (!Number.isFinite(value) || value <= 0) return undefined;
-  // Chrome cookie readers can surface expiries in a few formats:
-  // - Unix seconds (~1.7e9 in 2026)
-  // - Unix milliseconds (~1.7e12)
-  // - WebKit microseconds since 1601 (~1.3e16)
-  if (value > 10_000_000_000_000) return Math.round(value / 1_000_000 - 11644473600);
-  if (value > 10_000_000_000) return Math.round(value / 1000);
-  return Math.round(value);
-}
-
-function normalizeCookie(cookie, fallbackHost) {
-  if (!cookie?.name) return undefined;
-  const domain = typeof cookie.domain === "string" && cookie.domain.trim() ? cookie.domain.trim() : fallbackHost;
-  if (!domain) return undefined;
-
-  const expires = normalizeExpiration(cookie.expires);
-  return {
-    name: cookie.name,
-    value: cookie.value ?? "",
-    domain,
-    path: cookie.path || "/",
-    expires,
-    httpOnly: cookie.httpOnly ?? false,
-    secure: cookie.secure ?? true,
-    sameSite: normalizeSameSite(cookie.sameSite),
-  };
-}
-
 function cookieOrigins() {
   return Array.from(new Set([stripQuery(config.browser.chatUrl), ...CHATGPT_COOKIE_ORIGINS]));
 }
@@ -432,23 +397,20 @@ async function readSourceCookies() {
     await log(`sweet-cookie warnings: ${warnings.join(" | ")}`);
   }
 
-  const fallbackHost = new URL(config.browser.chatUrl).hostname;
-  const merged = new Map();
-  for (const cookie of cookies) {
-    const normalized = normalizeCookie(cookie, fallbackHost);
-    if (!normalized) continue;
-    const key = `${normalized.domain}:${normalized.name}`;
-    if (!merged.has(key)) merged.set(key, normalized);
-  }
-
-  const normalizedCookies = Array.from(merged.values());
+  const filtered = filterImportableAuthCookies(cookies, config.browser.chatUrl);
+  let normalizedCookies = filtered.cookies;
   await log(
-    `Read ${normalizedCookies.length} merged cookies: ${normalizedCookies.map((cookie) => `${cookie.name}@${cookie.domain}`).join(", ")}`,
+    `Read ${normalizedCookies.length} filtered auth cookies: ${normalizedCookies.map((cookie) => `${cookie.name}@${cookie.domain}`).join(", ")}`,
   );
+  if (filtered.dropped.length) {
+    await log(
+      `Dropped ${filtered.dropped.length} non-importable cookies: ` +
+        filtered.dropped.map(({ cookie, reason }) => `${cookie.name}@${cookie.domain}(${reason})`).join(", "),
+    );
+  }
 
   const hasSessionToken = normalizedCookies.some((cookie) => cookie.name.startsWith("__Secure-next-auth.session-token"));
   const hasAccountCookie = normalizedCookies.some((cookie) => cookie.name === "_account");
-  const fedrampCookie = normalizedCookies.find((cookie) => cookie.name === "_account_is_fedramp");
   await log(`Cookie presence: sessionToken=${hasSessionToken} account=${hasAccountCookie}`);
 
   if (!hasSessionToken) {
@@ -458,18 +420,11 @@ async function readSourceCookies() {
   }
 
   if (!hasAccountCookie) {
-    const isFedramp = /^(1|true|yes)$/i.test(String(fedrampCookie?.value || ""));
-    const fallbackAccountValue = isFedramp ? "fedramp" : "personal";
-    normalizedCookies.push({
-      name: "_account",
-      value: fallbackAccountValue,
-      domain: new URL(config.browser.chatUrl).hostname,
-      path: "/",
-      secure: true,
-      httpOnly: false,
-      sameSite: "Lax",
-    });
-    await log(`Synthesized missing _account cookie with value=${fallbackAccountValue}`);
+    const ensured = ensureAccountCookie(normalizedCookies, config.browser.chatUrl);
+    normalizedCookies = ensured.cookies;
+    if (ensured.synthesized) {
+      await log(`Synthesized missing _account cookie with value=${ensured.value}`);
+    }
   }
 
   return normalizedCookies;
@@ -655,6 +610,15 @@ function classifyChatPage({ url, snapshot, body, probe }) {
       message:
         `ChatGPT challenge detected after syncing cookies from ${cookieSourceLabel()}. ` +
         `The isolated oracle browser was left open on profile ${runtimeProfileDir}; complete the challenge there, then rerun /oracle-auth. Logs: ${LOG_PATH}`,
+    };
+  }
+
+  if (/http error 431|request header or cookie too large/i.test(text)) {
+    return {
+      state: "login_required",
+      message:
+        `Imported auth hit HTTP 431 during ChatGPT auth resolution, which usually means the imported cookie set is too large or stale. ` +
+        `Inspect ${LOG_PATH}.`,
     };
   }
 
