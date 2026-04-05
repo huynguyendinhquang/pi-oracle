@@ -36,6 +36,9 @@ const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Sup
 const ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const LOCKS_DIR = join(ORACLE_STATE_DIR, "locks");
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
+  (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
+) || "agent-browser";
 
 let runtimeProfileDir = config.browser.authSeedProfileDir;
 
@@ -165,7 +168,7 @@ function targetBrowserBaseArgs(options = {}) {
 
 async function closeTargetBrowser() {
   await log(`Closing target browser session ${authSessionName()} if present`);
-  const result = await spawnCommand("agent-browser", [...targetBrowserBaseArgs(), "close"], { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "close"], { allowFailure: true });
   await log(`close result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
 }
 
@@ -182,7 +185,7 @@ async function ensureNotSymlink(path, label) {
 }
 
 async function isAuthBrowserConnected() {
-  const result = await spawnCommand("agent-browser", [...targetBrowserBaseArgs(), "--json", "stream", "status"], { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "--json", "stream", "status"], { allowFailure: true });
   try {
     const parsed = JSON.parse(result.stdout || "{}");
     return parsed?.data?.connected === true;
@@ -274,7 +277,7 @@ async function launchTargetBrowser() {
   await closeTargetBrowser();
   const args = [...targetBrowserBaseArgs({ withLaunchOptions: true, mode: "headed" }), "open", "about:blank"];
   await log(`Launching isolated browser: agent-browser ${JSON.stringify(args)}`);
-  const result = await spawnCommand("agent-browser", args, { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, args, { allowFailure: true });
   await log(`launch result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
   if (result.code !== 0) {
     throw new Error(result.stderr || result.stdout || "Failed to launch isolated oracle browser");
@@ -282,7 +285,7 @@ async function launchTargetBrowser() {
 }
 
 async function streamStatus() {
-  const result = await spawnCommand("agent-browser", [...targetBrowserBaseArgs(), "--json", "stream", "status"], { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "--json", "stream", "status"], { allowFailure: true });
   await log(`stream status: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
   try {
     const parsed = JSON.parse(result.stdout || "{}");
@@ -311,7 +314,7 @@ async function targetCommand(...args) {
     options = args.pop();
   }
   await ensureBrowserConnected();
-  const result = await spawnCommand("agent-browser", [...targetBrowserBaseArgs(), ...args], options);
+  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), ...args], options);
   const label = options?.logLabel || `agent-browser ${args.join(" ")}`;
   await log(`${label}: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
   return result;

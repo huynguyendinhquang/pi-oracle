@@ -324,6 +324,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
 }
 
+async function testResponseTimeoutGuard(): Promise<void> {
+  const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
+  assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
+  assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
+}
+
 async function testPollerHostSafety(): Promise<void> {
   const sessionFile = "/tmp/oracle-sanity-session-host-safety.jsonl";
   const pi: any = { sendMessage: () => {} };
@@ -368,6 +374,7 @@ async function main() {
   await testTerminalJobPruningAndCleanup(config);
   await testLifecycleEventCutover();
   await testOraclePromptTemplateCutover();
+  await testResponseTimeoutGuard();
   await testPollerHostSafety();
   await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
   console.log("oracle sanity checks passed");

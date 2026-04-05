@@ -7,6 +7,9 @@ import type { OracleConfig } from "./config.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
 
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
+const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
+  (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
+) || "agent-browser";
 
 export interface OracleRuntimeLeaseMetadata {
   jobId: string;
@@ -181,7 +184,7 @@ export interface OracleCleanupReport {
 
 async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<string | undefined> {
   return new Promise<string | undefined>((resolve) => {
-    const child = spawn("agent-browser", ["--session", runtimeSessionName, "close"], { stdio: "ignore" });
+    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { stdio: "ignore" });
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     let timedOut = false;

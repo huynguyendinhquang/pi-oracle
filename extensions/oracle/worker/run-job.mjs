@@ -37,6 +37,9 @@ const ARTIFACT_DOWNLOAD_HEARTBEAT_MS = 10_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000;
 const ARTIFACT_DOWNLOAD_MAX_ATTEMPTS = 2;
 const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
+const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
+  (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
+) || "agent-browser";
 
 let currentJob;
 let browserStarted = false;
@@ -321,7 +324,7 @@ async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
   cleaningUpBrowser = true;
   try {
-    const result = await spawnCommand("agent-browser", [...browserBaseArgs(job), "close"], {
+    const result = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "close"], {
       allowFailure: true,
       timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
     });
@@ -337,12 +340,12 @@ async function closeBrowser(job) {
 async function launchBrowser(job, url) {
   await closeBrowser(job);
   const mode = job.config.browser.runMode;
-  await spawnCommand("agent-browser", [...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]);
+  await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]);
   browserStarted = true;
 }
 
 async function streamStatus(job) {
-  const { stdout } = await spawnCommand("agent-browser", [...browserBaseArgs(job), "--json", "stream", "status"], { allowFailure: true });
+  const { stdout } = await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "--json", "stream", "status"], { allowFailure: true });
   try {
     const parsed = JSON.parse(stdout || "{}");
     return parsed?.data || {};
@@ -374,7 +377,7 @@ async function agentBrowser(job, ...args) {
     options = args.pop();
   }
   await ensureBrowserConnected(job);
-  return spawnCommand("agent-browser", [...browserBaseArgs(job), ...args], options);
+  return spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), ...args], options);
 }
 
 function parseEvalResult(stdout) {
@@ -829,6 +832,17 @@ function detectUploadErrorText(text) {
   return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
 }
 
+function detectResponseFailureText(text) {
+  const patterns = [
+    "Message delivery timed out",
+    "A network error occurred",
+    "An error occurred while connecting to the websocket",
+    "There was an error generating a response",
+    "Something went wrong while generating the response",
+  ];
+  return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
+}
+
 function composerSnapshotSlice(snapshot) {
   const lines = snapshot.split("\n");
   let composerIndex = -1;
@@ -1120,16 +1134,38 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
   let lastText = "";
   let stableCount = 0;
+  let retriedAfterFailure = false;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
-    const snapshot = await snapshotText(job);
+    const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
     const hasStopStreaming = snapshot.includes("Stop streaming");
+    const hasRetryButton = snapshot.includes('button "Retry"');
     const copyResponseCount = (snapshot.match(/Copy response/g) || []).length;
+    const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const messages = await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];
     const targetText = targetMessage?.text || "";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
+
+    if (!hasStopStreaming && hasRetryButton && responseFailureText) {
+      if (!retriedAfterFailure) {
+        const retryEntry = findEntry(
+          snapshot,
+          (candidate) => candidate.kind === "button" && candidate.label === "Retry" && !candidate.disabled,
+        );
+        if (retryEntry) {
+          retriedAfterFailure = true;
+          lastText = "";
+          stableCount = 0;
+          await log(`Response delivery failed (${responseFailureText}); clicking Retry once`);
+          await clickRef(job, retryEntry.ref);
+          await agentBrowser(job, "wait", "1000").catch(() => undefined);
+          continue;
+        }
+      }
+      throw new Error(`ChatGPT response failed: ${responseFailureText}`);
+    }
 
     if (!hasStopStreaming && hasTargetCopyResponse && targetText) {
       if (targetText === lastText) stableCount += 1;
