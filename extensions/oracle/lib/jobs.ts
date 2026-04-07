@@ -56,6 +56,10 @@ export function shouldAdvanceQueueAfterCancellation(job: Pick<OracleJob, "status
   return job.status === "cancelled" && !job.cleanupPending && !job.cleanupWarnings?.length;
 }
 
+export function hasRetainedPreSubmitArchive(job: Pick<OracleJob, "submittedAt" | "archiveDeletedAfterUpload" | "archivePath">): boolean {
+  return !job.submittedAt && !job.archiveDeletedAfterUpload && typeof job.archivePath === "string" && job.archivePath.length > 0;
+}
+
 export function hasDurableWorkerHandoff(
   job: Pick<OracleJob, "status" | "phase" | "workerPid" | "workerStartedAt" | "heartbeatAt">,
 ): boolean {
@@ -443,17 +447,32 @@ function getTerminalCleanupStaleReason(job: Pick<OracleJob, "status" | "cleanupP
 }
 
 export async function cleanupJobResources(
-  job: Pick<OracleJob, "submittedAt" | "runtimeId" | "runtimeProfileDir" | "runtimeSessionName" | "conversationId">,
+  job: Pick<OracleJob, "submittedAt" | "runtimeId" | "runtimeProfileDir" | "runtimeSessionName" | "conversationId" | "archivePath" | "archiveDeletedAfterUpload">,
 ): Promise<OracleCleanupReport> {
-  if (!job.submittedAt) {
-    return { attempted: [], warnings: [] };
+  const report: OracleCleanupReport = { attempted: [], warnings: [] };
+
+  if (hasRetainedPreSubmitArchive(job)) {
+    report.attempted.push("queuedArchive");
+    await rm(job.archivePath, { force: true }).catch((error: Error) => {
+      report.warnings.push(`Failed to remove queued archive ${job.archivePath}: ${error.message}`);
+    });
   }
-  return cleanupRuntimeArtifacts({
+
+  if (!job.submittedAt) {
+    return report;
+  }
+
+  const runtimeReport = await cleanupRuntimeArtifacts({
     runtimeId: job.runtimeId,
     runtimeProfileDir: job.runtimeProfileDir,
     runtimeSessionName: job.runtimeSessionName,
     conversationId: job.conversationId,
   });
+
+  return {
+    attempted: [...report.attempted, ...runtimeReport.attempted],
+    warnings: [...report.warnings, ...runtimeReport.warnings],
+  };
 }
 
 function getCleanupRetentionMs(job: OracleJob): { complete: number; failed: number } {
@@ -805,17 +824,14 @@ export async function cancelOracleJob(id: string, reason = "Cancelled by user"):
         }, now),
       }));
 
-      const cleanupWarnings: string[] = [];
-      await rm(cancelled.archivePath, { force: true }).catch((error: Error) => {
-        cleanupWarnings.push(`Failed to remove queued archive ${cancelled.archivePath}: ${error.message}`);
-      });
-      if (cleanupWarnings.length === 0) return cancelled;
+      const cleanupReport = await cleanupJobResources(cancelled);
+      if (cleanupReport.warnings.length === 0) return cancelled;
 
       return updateJob(id, (job) => ({
         ...job,
-        cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupWarnings],
+        cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupReport.warnings],
         lastCleanupAt: now,
-        error: [job.error, ...cleanupWarnings].filter(Boolean).join("\n"),
+        error: [job.error, ...cleanupReport.warnings].filter(Boolean).join("\n"),
       }));
     }
 

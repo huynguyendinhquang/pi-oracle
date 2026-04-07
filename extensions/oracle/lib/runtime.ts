@@ -231,7 +231,7 @@ export async function cloneSeedProfileToRuntime(config: OracleConfig, runtimePro
 const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 
 export interface OracleCleanupReport {
-  attempted: Array<"browser" | "runtimeProfileDir" | "conversationLease" | "runtimeLease">;
+  attempted: Array<"browser" | "runtimeProfileDir" | "conversationLease" | "runtimeLease" | "queuedArchive">;
   warnings: string[];
 }
 

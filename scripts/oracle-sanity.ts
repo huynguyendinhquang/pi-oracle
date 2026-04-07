@@ -49,7 +49,7 @@ import {
 import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "../extensions/oracle/lib/queue.ts";
 import { acquireConversationLease, acquireRuntimeLease, getProjectId, releaseConversationLease, releaseRuntimeLease, tryAcquireConversationLease, tryAcquireRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
-import { createArchiveForTesting, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
+import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 
@@ -944,6 +944,87 @@ async function testCancelCleanupWarningsDoNotPromoteQueuedJobs(config: OracleCon
     await runCase("command");
   } finally {
     await rm(fakeWorkerPath, { force: true });
+  }
+}
+
+async function testQueuedCleanupWarningsRetryArchiveDeletion(config: OracleConfig): Promise<void> {
+  await rm(getOracleStateDir(), { recursive: true, force: true });
+  const cwd = process.cwd();
+  const sessionId = "/tmp/oracle-sanity-session-queued-cleanup-retry.jsonl";
+  const queuedId = await createJobForTest(config, cwd, sessionId, { initialState: "queued" });
+  const queued = readJob(queuedId);
+  assert(queued, "queued cleanup retry job should exist");
+  await rm(queued.archivePath, { force: true });
+  await mkdir(queued.archivePath, { recursive: true, mode: 0o700 });
+
+  try {
+    const cancelled = await cancelOracleJob(queuedId);
+    assert(Boolean(cancelled.cleanupWarnings?.length), "queued cleanup retry should start with cleanup warnings after the initial archive delete failure");
+
+    const firstRepair = await reconcileStaleOracleJobs();
+    assert(firstRepair.some((entry) => entry.id === queuedId), "reconcile should revisit queued cleanup warnings and retry archive deletion");
+    const stillBlocked = readJob(queuedId);
+    assert(Boolean(stillBlocked?.cleanupWarnings?.length), "reconcile should retain queued cleanup warnings while archive deletion still fails");
+
+    await rm(queued.archivePath, { recursive: true, force: true });
+    const secondRepair = await reconcileStaleOracleJobs();
+    assert(secondRepair.some((entry) => entry.id === queuedId), "queued cleanup retry should report the follow-up repair after the stranded archive is removed");
+    const recovered = readJob(queuedId);
+    assert(recovered?.cleanupWarnings === undefined, "queued cleanup retry should only clear cleanup warnings once archive deletion succeeds or the archive is already gone");
+    assert(recovered?.cleanupPending !== true, "queued cleanup retry should not leave queued cancellations stuck in cleanupPending once archive cleanup succeeds");
+  } finally {
+    await cleanupJob(queuedId);
+  }
+}
+
+async function testQueuedArchivePressureCountsRetainedCancelledPreSubmitArchives(config: OracleConfig): Promise<void> {
+  await rm(getOracleStateDir(), { recursive: true, force: true });
+  const cwd = process.cwd();
+  const sessionId = "/tmp/oracle-sanity-session-queued-archive-pressure.jsonl";
+  const queuedId = await createJobForTest(config, cwd, sessionId, { initialState: "queued" });
+  const strandedId = await createJobForTest(config, cwd, sessionId, { initialState: "queued" });
+  const queued = readJob(queuedId);
+  const stranded = readJob(strandedId);
+  assert(queued && stranded, "queued archive pressure test jobs should exist");
+
+  try {
+    await writeFile(queued.archivePath, Buffer.alloc(2048, 7), { mode: 0o600 });
+    await writeFile(stranded.archivePath, Buffer.alloc(3072, 9), { mode: 0o600 });
+    const cancelledAt = new Date().toISOString();
+    await updateJob(strandedId, (job) => ({
+      ...job,
+      ...withJobPhase("cancelled", {
+        status: "cancelled",
+        completedAt: cancelledAt,
+        heartbeatAt: cancelledAt,
+        cleanupWarnings: [`Failed to remove queued archive ${stranded.archivePath}: simulated failure`],
+        error: "simulated queued archive cleanup failure",
+      }, cancelledAt),
+    }));
+
+    const pressure = await getQueuedArchivePressure();
+    const expectedQueuedBytes = (await stat(queued.archivePath)).size + (await stat(stranded.archivePath)).size;
+    assert(pressure.queuedJobs === 1, "queued archive pressure should keep queued-job counts tied to actual queued jobs only");
+    assert(pressure.queuedArchiveBytes === expectedQueuedBytes, "queued archive pressure should include stranded cancelled pre-submit archives in byte accounting");
+
+    const queuedArchiveFailure = getQueueAdmissionFailure({
+      queuePressure: pressure,
+      archiveBytes: 1,
+      activeJobs: 1,
+      maxActiveJobs: 1,
+      maxQueuedJobs: 5,
+      maxQueuedArchiveBytes: pressure.queuedArchiveBytes,
+    });
+    assert(Boolean(queuedArchiveFailure?.includes("retained pre-submit archives")), "queued archive admission failures should explain that retained pre-submit archives count against the byte cap");
+
+    await rm(stranded.archivePath, { force: true });
+    await reconcileStaleOracleJobs();
+    const pressureAfterCleanup = await getQueuedArchivePressure();
+    assert(pressureAfterCleanup.queuedArchiveBytes === (await stat(queued.archivePath)).size, "queued archive pressure should drop after stranded pre-submit archive cleanup succeeds");
+  } finally {
+    await cancelOracleJob(queuedId).catch(() => undefined);
+    await cleanupJob(queuedId);
+    await cleanupJob(strandedId);
   }
 }
 
@@ -2836,12 +2917,15 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should keep leases when teardown leaves warnings");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
   assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
+  assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");
+  assert(toolsSource.includes("queued jobs and retained pre-submit archives"), "queued archive admission errors should explain that stranded pre-submit archives count against the byte cap");
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel command should only promote queued jobs after a clean cancellation");
   assert(commandsSource.includes("Refusing to remove non-terminal oracle job"), "oracle clean should refuse queued jobs");
-  assert(jobsSource.includes("rm(cancelled.archivePath, { force: true })"), "queued cancellation should delete persisted archives to enforce queue storage caps");
+  assert(jobsSource.includes("report.attempted.push(\"queuedArchive\")"), "cleanup retry should treat queued archive deletion as a first-class cleanup target");
+  assert(jobsSource.includes("Failed to remove queued archive"), "queued cleanup retries should preserve warnings when archive deletion keeps failing");
   assert(jobsSource.includes("if (cleanupReport.warnings.length > 0)"), "terminal cleanup should retain job state when cleanup reports warnings");
   assert(jobsSource.includes("cleanupPending: terminated"), "terminal cancellation/recovery should mark cleanup pending until teardown finishes");
 }
@@ -3208,6 +3292,8 @@ async function main() {
   await testQueuedPromotionRequiresArchiveReadiness(config);
   await testQueuedCancellationSerializesWithPromotion(config);
   await testCancelCleanupWarningsDoNotPromoteQueuedJobs(config);
+  await testQueuedCleanupWarningsRetryArchiveDeletion(config);
+  await testQueuedArchivePressureCountsRetainedCancelledPreSubmitArchives(config);
   await testCancelFailureDoesNotPromoteQueuedJobs(config);
   await testQueuedPromotionPersistsCleanupWarningsOnTeardownFailure(config);
   await testQueuedPromotionKillsWorkerWhenMetadataWriteFails(config);

@@ -13,6 +13,7 @@ import {
   getJobDir,
   getSessionFile,
   hasDurableWorkerHandoff,
+  hasRetainedPreSubmitArchive,
   isOpenOracleJob,
   isTerminalOracleJob,
   listOracleJobDirs,
@@ -436,25 +437,58 @@ async function createArchive(cwd: string, files: string[], archivePath: string):
   return createArchiveForTesting(cwd, files, archivePath);
 }
 
-async function getQueuedArchivePressure(): Promise<{ queuedJobs: number; queuedArchiveBytes: number }> {
-  const queuedJobs = listOracleJobDirs()
+export interface QueuedArchivePressure {
+  queuedJobs: number;
+  queuedArchiveBytes: number;
+}
+
+export async function getQueuedArchivePressure(): Promise<QueuedArchivePressure> {
+  const jobs = listOracleJobDirs()
     .map((dir) => readJob(dir))
-    .filter((job): job is NonNullable<typeof job> => Boolean(job && job.status === "queued"));
+    .filter((job): job is NonNullable<typeof job> => Boolean(job));
 
   const queuedArchiveBytes = (await Promise.all(
-    queuedJobs.map(async (job) => {
-      try {
-        return (await stat(job.archivePath)).size;
-      } catch {
-        return 0;
-      }
-    }),
+    jobs
+      .filter((job) => hasRetainedPreSubmitArchive(job))
+      .map(async (job) => {
+        try {
+          return (await stat(job.archivePath)).size;
+        } catch {
+          return 0;
+        }
+      }),
   )).reduce((sum, bytes) => sum + bytes, 0);
 
   return {
-    queuedJobs: queuedJobs.length,
+    queuedJobs: jobs.filter((job) => job.status === "queued").length,
     queuedArchiveBytes,
   };
+}
+
+export function getQueueAdmissionFailure(args: {
+  queuePressure: QueuedArchivePressure;
+  archiveBytes: number;
+  activeJobs: number;
+  maxActiveJobs: number;
+  maxQueuedJobs: number;
+  maxQueuedArchiveBytes: number;
+}): string | undefined {
+  if (args.queuePressure.queuedJobs >= args.maxQueuedJobs) {
+    return (
+      `Oracle is busy (${args.activeJobs}/${args.maxActiveJobs} active, ${args.queuePressure.queuedJobs}/${args.maxQueuedJobs} queued). ` +
+      "Retry later instead of enqueuing more archive state."
+    );
+  }
+
+  const queuedArchiveBytes = args.queuePressure.queuedArchiveBytes + args.archiveBytes;
+  if (queuedArchiveBytes > args.maxQueuedArchiveBytes) {
+    return (
+      `Oracle queued archive storage is full (${queuedArchiveBytes} bytes > ${args.maxQueuedArchiveBytes} bytes across queued jobs and retained pre-submit archives). ` +
+      "Retry later or narrow the archive inputs."
+    );
+  }
+
+  return undefined;
 }
 
 function validateSubmissionOptions(
@@ -638,18 +672,17 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
           if (!runtimeAttempt.acquired) {
             const queuePressure = await getQueuedArchivePressure();
             const maxQueuedJobs = config.browser.maxConcurrentJobs * MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME;
-            if (queuePressure.queuedJobs >= maxQueuedJobs) {
-              throw new Error(
-                `Oracle is busy (${runtimeAttempt.liveLeases.length}/${config.browser.maxConcurrentJobs} active, ${queuePressure.queuedJobs}/${maxQueuedJobs} queued). ` +
-                  "Retry later instead of enqueuing more archive state.",
-              );
-            }
             const maxQueuedArchiveBytes = config.browser.maxConcurrentJobs * MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME;
-            if (queuePressure.queuedArchiveBytes + currentArchive.archiveBytes > maxQueuedArchiveBytes) {
-              throw new Error(
-                `Oracle queued archive storage is full (${queuePressure.queuedArchiveBytes + currentArchive.archiveBytes} bytes > ${maxQueuedArchiveBytes} bytes across queued jobs). ` +
-                  "Retry later or narrow the archive inputs.",
-              );
+            const queueAdmissionFailure = getQueueAdmissionFailure({
+              queuePressure,
+              archiveBytes: currentArchive.archiveBytes,
+              activeJobs: runtimeAttempt.liveLeases.length,
+              maxActiveJobs: config.browser.maxConcurrentJobs,
+              maxQueuedJobs,
+              maxQueuedArchiveBytes,
+            });
+            if (queueAdmissionFailure) {
+              throw new Error(queueAdmissionFailure);
             }
 
             queued = true;
