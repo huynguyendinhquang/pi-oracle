@@ -4,7 +4,7 @@ import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from 
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
-import { FILE_LABEL_PATTERN_SOURCE, filterStructuralArtifactCandidates, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries } from "./artifact-heuristics.mjs";
+import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -1497,28 +1497,52 @@ function preferredArtifactName(label, index) {
 async function collectArtifactCandidates(job, responseIndex, responseText = "") {
   const snapshot = await snapshotText(job);
   const targetSlice = assistantSnapshotSlice(snapshot, responseIndex);
-  if (!targetSlice) return { snapshot, targetSlice, candidates: [] };
+  if (!targetSlice) return { snapshot, targetSlice, candidates: [], suspiciousLabels: [] };
 
   const structural = await evalPage(
     job,
     toJsonScript(`
       const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
       const genericArtifactLabels = new Set(${JSON.stringify(GENERIC_ARTIFACT_LABELS)});
-      const fileLabelPattern = new RegExp(${JSON.stringify(FILE_LABEL_PATTERN_SOURCE)});
+      const fileLabelPattern = new RegExp(${JSON.stringify(FILE_LABEL_PATTERN_SOURCE)}, 'g');
+      const downloadControlPattern = /(?:^|\\b)(?:download|save)(?:\\b|$)/i;
+      const artifactMarkerAttr = 'data-pi-oracle-artifact-candidate';
+      const artifactPrefix = 'pi-oracle-artifact-${jobId}-${responseIndex}-';
+      const sanitize = (value) => normalize(value).replace(/^[^A-Za-z0-9._~/-]+|[^A-Za-z0-9._~/-]+$/g, '');
+      const sanitizeArtifactLabel = (value) => {
+        const normalized = sanitize(value);
+        if (!normalized) return '';
+        const basename = normalized.split(/[\\/]/).filter(Boolean).at(-1) || '';
+        return basename.replace(/^[^A-Za-z0-9._-]+|[^A-Za-z0-9._-]+$/g, '');
+      };
+      const extractArtifactLabels = (value) => {
+        const seen = new Set();
+        const labels = [];
+        for (const match of String(value || '').matchAll(fileLabelPattern)) {
+          const label = sanitizeArtifactLabel(match[1] || match[0] || '');
+          if (!label || seen.has(label)) continue;
+          seen.add(label);
+          labels.push(label);
+        }
+        return labels;
+      };
       const isFileLabel = (value) => {
         const normalized = normalize(value);
         if (!normalized) return false;
         if (genericArtifactLabels.has(normalized.toUpperCase())) return true;
-        return fileLabelPattern.test(normalized);
+        return extractArtifactLabels(normalized).length > 0;
       };
+      const isDownloadControl = (value) => downloadControlPattern.test(normalize(value));
       const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
         .filter((el) => normalize(el.textContent) === 'ChatGPT said:');
       const host = headings[${responseIndex}]?.nextElementSibling;
       if (!host) return { candidates: [] };
 
-      const fileButtons = (node) => node
-        ? Array.from(node.querySelectorAll('button, a')).map((candidate) => normalize(candidate.textContent)).filter(isFileLabel)
-        : [];
+      const interactiveElements = (node) => node ? Array.from(node.querySelectorAll('button, a')) : [];
+      const interactiveLabels = (node) => interactiveElements(node)
+        .map((candidate) => normalize(candidate.textContent || candidate.getAttribute('aria-label') || candidate.getAttribute('title')))
+        .filter(Boolean);
+      const artifactLabelsForNode = (node) => extractArtifactLabels(node?.textContent || '');
       const otherTextLength = (text, labels) => {
         let remaining = normalize(text);
         for (const label of labels || []) {
@@ -1528,25 +1552,43 @@ async function collectArtifactCandidates(job, responseIndex, responseText = "") 
         return remaining.length;
       };
       const focusableFor = (node) => node?.closest('[tabindex]');
+      const uniqueLabel = (...groups) => {
+        for (const group of groups) {
+          const labels = Array.from(new Set((group || []).map(sanitizeArtifactLabel).filter(Boolean)));
+          if (labels.length === 1) return labels[0];
+        }
+        return undefined;
+      };
 
-      const candidates = Array.from(host.querySelectorAll('button, a'))
-        .map((button) => {
-          const label = normalize(button.textContent);
-          if (!isFileLabel(label)) return null;
+      const candidates = interactiveElements(host)
+        .map((button, index) => {
+          const controlLabel = normalize(button.textContent || button.getAttribute('aria-label') || button.getAttribute('title'));
           const paragraph = button.closest('p');
           const listItem = button.closest('li');
           const focusable = focusableFor(button);
-          const paragraphFileLabels = fileButtons(paragraph);
-          const focusableFileLabels = fileButtons(focusable);
+          const ownArtifactLabels = extractArtifactLabels(controlLabel);
+          const paragraphArtifactLabels = artifactLabelsForNode(paragraph);
+          const listItemArtifactLabels = artifactLabelsForNode(listItem);
+          const focusableArtifactLabels = artifactLabelsForNode(focusable);
+          const label = uniqueLabel(ownArtifactLabels, listItemArtifactLabels, paragraphArtifactLabels, focusableArtifactLabels);
+          if (!label && !isFileLabel(controlLabel) && !isDownloadControl(controlLabel)) return null;
+          if (!label) return null;
+          const marker = artifactPrefix + index;
+          button.setAttribute(artifactMarkerAttr, marker);
           return {
             label,
+            selector: '[' + artifactMarkerAttr + '="' + marker + '"]',
+            controlLabel,
             paragraphText: normalize(paragraph?.textContent),
             listItemText: normalize(listItem?.textContent),
-            paragraphFileButtonCount: paragraphFileLabels.length,
-            paragraphOtherTextLength: otherTextLength(paragraph?.textContent, paragraphFileLabels),
-            listItemFileButtonCount: fileButtons(listItem).length,
-            focusableFileButtonCount: focusableFileLabels.length,
-            focusableOtherTextLength: otherTextLength(focusable?.textContent, focusableFileLabels),
+            paragraphInteractiveCount: interactiveElements(paragraph).length,
+            paragraphArtifactLabelCount: Array.from(new Set(paragraphArtifactLabels)).length,
+            paragraphOtherTextLength: otherTextLength(paragraph?.textContent, [...paragraphArtifactLabels, ...interactiveLabels(paragraph)]),
+            listItemInteractiveCount: interactiveElements(listItem).length,
+            listItemArtifactLabelCount: Array.from(new Set(listItemArtifactLabels)).length,
+            focusableInteractiveCount: interactiveElements(focusable).length,
+            focusableArtifactLabelCount: Array.from(new Set(focusableArtifactLabels)).length,
+            focusableOtherTextLength: otherTextLength(focusable?.textContent, [...focusableArtifactLabels, ...interactiveLabels(focusable)]),
           };
         })
         .filter(Boolean);
@@ -1555,10 +1597,26 @@ async function collectArtifactCandidates(job, responseIndex, responseText = "") 
     `),
   );
 
+  const partitioned = partitionStructuralArtifactCandidates(structural?.candidates || []);
+  const snapshotEntries = parseSnapshotEntries(targetSlice);
+  const hasGenericArtifactControl = snapshotEntries.some(
+    (entry) =>
+      (entry.kind === "button" || entry.kind === "link") &&
+      !entry.disabled &&
+      /(?:^|\b)(?:download|save)(?:\b|$)/i.test(`${entry.label || ""} ${entry.value || ""}`),
+  );
+  const suspiciousFromText = hasGenericArtifactControl
+    ? extractArtifactLabels(responseText)
+        .filter((label) => !partitioned.confirmed.some((candidate) => candidate.label === label) && !partitioned.suspicious.some((candidate) => candidate.label === label))
+        .map((label) => ({ label }))
+    : [];
+
   return {
     snapshot,
     targetSlice,
-    candidates: filterStructuralArtifactCandidates(structural?.candidates || []),
+    candidates: partitioned.confirmed,
+    suspiciousLabels: [...partitioned.suspicious.map((candidate) => candidate.label), ...suspiciousFromText.map((candidate) => candidate.label)]
+      .filter((label, index, labels) => labels.indexOf(label) === index),
   };
 }
 
@@ -1566,11 +1624,14 @@ async function waitForStableArtifactCandidates(job, responseIndex, responseText 
   const deadline = Date.now() + ARTIFACT_CANDIDATE_STABILITY_TIMEOUT_MS;
   let lastSignature;
   let stablePolls = 0;
-  let latest = { snapshot: "", targetSlice: undefined, candidates: [] };
+  let latest = { snapshot: "", targetSlice: undefined, candidates: [], suspiciousLabels: [] };
 
   while (Date.now() < deadline) {
     latest = await collectArtifactCandidates(job, responseIndex, responseText);
-    const signature = latest.candidates.map((candidate) => candidate.label).join("\n");
+    const signature = JSON.stringify({
+      candidates: latest.candidates.map((candidate) => candidate.label),
+      suspiciousLabels: latest.suspiciousLabels,
+    });
     if (signature === lastSignature) stablePolls += 1;
     else {
       lastSignature = signature;
@@ -1628,7 +1689,7 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
     return [];
   }
 
-  const { targetSlice, candidates } = await reopenConversationForArtifacts(job, responseIndex, responseText, "initial");
+  let { targetSlice, candidates, suspiciousLabels } = await reopenConversationForArtifacts(job, responseIndex, responseText, "initial");
   if (!targetSlice) {
     await log(`No assistant response found in snapshot for response index ${responseIndex}`);
     await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
@@ -1637,33 +1698,32 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
   }
 
   await log(`Artifact candidates: ${candidates.map((candidate) => candidate.label).join(", ") || "(none)"}`);
+  if (suspiciousLabels.length > 0) {
+    await log(`Suspicious artifact signals: ${suspiciousLabels.join(", ")}`);
+  }
 
   const artifactsDir = `${jobDir}/artifacts`;
   await ensurePrivateDir(artifactsDir);
   const artifacts = [];
   await flushArtifactsState(artifacts);
 
-  for (const [index, candidate] of candidates.entries()) {
+  for (const [index, originalCandidate] of candidates.entries()) {
     let downloaded = false;
+    let activeCandidate = originalCandidate;
     for (let attempt = 1; attempt <= ARTIFACT_DOWNLOAD_MAX_ATTEMPTS && !downloaded; attempt += 1) {
-      const freshSnapshot = await snapshotText(job);
-      const freshSlice = assistantSnapshotSlice(freshSnapshot, responseIndex);
-      if (!freshSlice) break;
-      const freshEntries = parseSnapshotEntries(freshSlice);
-      const entry = freshEntries.find(
-        (artifactEntry) => artifactEntry.label === candidate.label && (artifactEntry.kind === "button" || artifactEntry.kind === "link") && !artifactEntry.disabled,
-      );
-      if (!entry) {
-        await log(`Artifact "${candidate.label}" not found in fresh snapshot, skipping`);
+      if (!activeCandidate?.selector) {
+        await log(`Artifact "${originalCandidate.label}" has no live selector, marking unconfirmed`);
+        artifacts.push({ displayName: originalCandidate.label, unconfirmed: true, error: "Artifact candidate lost its live selector before download." });
+        await flushArtifactsState(artifacts);
         break;
       }
 
-      const destinationPath = join(artifactsDir, preferredArtifactName(candidate.label, index));
+      const destinationPath = join(artifactsDir, preferredArtifactName(originalCandidate.label, index));
       await rm(destinationPath, { force: true }).catch(() => undefined);
       try {
-        await log(`Artifact "${candidate.label}" download attempt ${attempt}/${ARTIFACT_DOWNLOAD_MAX_ATTEMPTS} using ref ${entry.ref}`);
+        await log(`Artifact "${originalCandidate.label}" download attempt ${attempt}/${ARTIFACT_DOWNLOAD_MAX_ATTEMPTS} using selector ${activeCandidate.selector}`);
         await withHeartbeatWhile(() =>
-          agentBrowser(job, "download", entry.ref, destinationPath, {
+          agentBrowser(job, "download", activeCandidate.selector, destinationPath, {
             timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS,
           }),
         );
@@ -1675,7 +1735,7 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
           detectType(destinationPath),
         ]);
         artifacts.push({
-          displayName: candidate.label,
+          displayName: originalCandidate.label,
           fileName: basename(destinationPath),
           copiedPath: destinationPath,
           size,
@@ -1686,17 +1746,31 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await rm(destinationPath, { force: true }).catch(() => undefined);
-        await log(`Artifact "${candidate.label}" download failed on attempt ${attempt}/${ARTIFACT_DOWNLOAD_MAX_ATTEMPTS}: ${message}`);
+        await log(`Artifact "${originalCandidate.label}" download failed on attempt ${attempt}/${ARTIFACT_DOWNLOAD_MAX_ATTEMPTS}: ${message}`);
         if (attempt >= ARTIFACT_DOWNLOAD_MAX_ATTEMPTS) {
-          artifacts.push({ displayName: candidate.label, unconfirmed: true, error: message });
+          artifacts.push({ displayName: originalCandidate.label, unconfirmed: true, error: message });
         } else {
-          await reopenConversationForArtifacts(job, responseIndex, responseText, `retry ${attempt + 1} for ${candidate.label}`);
+          const refreshed = await reopenConversationForArtifacts(job, responseIndex, responseText, `retry ${attempt + 1} for ${originalCandidate.label}`);
+          targetSlice = refreshed.targetSlice;
+          candidates = refreshed.candidates;
+          suspiciousLabels = refreshed.suspiciousLabels;
+          activeCandidate = candidates.find((candidate) => candidate.label === originalCandidate.label);
           await sleep(1_000);
         }
       } finally {
         await flushArtifactsState(artifacts);
       }
     }
+  }
+
+  const capturedArtifactLabels = new Set(artifacts.map((artifact) => artifact.displayName).filter(Boolean));
+  const missedArtifactLabels = suspiciousLabels.filter((label) => !capturedArtifactLabels.has(label));
+  if (missedArtifactLabels.length > 0) {
+    await log(`Marking missed artifact signals as unconfirmed: ${missedArtifactLabels.join(", ")}`);
+    for (const label of missedArtifactLabels) {
+      artifacts.push({ displayName: label, unconfirmed: true, error: "Response-local artifact signal was present, but no downloadable artifact was captured." });
+    }
+    await flushArtifactsState(artifacts);
   }
 
   return artifacts;
@@ -1759,9 +1833,10 @@ async function run() {
     currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("downloading_artifacts", { heartbeatAt: new Date().toISOString() }) }));
     const artifacts = await downloadArtifacts(currentJob, completion.responseIndex, completion.responseText);
     const artifactFailureCount = artifacts.filter((artifact) => artifact.unconfirmed || artifact.error).length;
+    const finalPhase = artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete";
 
     await heartbeat(
-      phasePatch(artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete", {
+      phasePatch(finalPhase, {
         status: "complete",
         completedAt: new Date().toISOString(),
         responsePath: currentJob.responsePath,
@@ -1773,7 +1848,7 @@ async function run() {
     );
     const persistedJob = await readJob().catch(() => undefined);
     await log(`Persisted final status after completion write: ${persistedJob?.status || "unknown"}`);
-    await log(`Job ${currentJob.id} complete`);
+    await log(`Job ${currentJob.id} complete (${finalPhase}, artifact failures=${artifactFailureCount})`);
   } catch (error) {
     if (!shuttingDown) {
       const message = error instanceof Error ? error.message : String(error);

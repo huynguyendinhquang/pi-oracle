@@ -1,7 +1,8 @@
-export const FILE_LABEL_PATTERN_SOURCE = String.raw`(?:^|[^\w])[^\n]*\.[A-Za-z0-9]{1,12}(?:$|[^\w])`;
-const FILE_LABEL_PATTERN = new RegExp(FILE_LABEL_PATTERN_SOURCE);
+export const FILE_LABEL_PATTERN_SOURCE = String.raw`(?:^|[^A-Za-z0-9._~/-])((?:(?:[A-Za-z]:)?[\\/]|[.~][\\/])?(?:[^\\/\s"'<>|]+[\\/])*[^\\/\s"'<>|]+\.[A-Za-z0-9]{1,12})(?=$|[^A-Za-z0-9._~/-])`;
+const FILE_LABEL_PATTERN = new RegExp(FILE_LABEL_PATTERN_SOURCE, "g");
 export const GENERIC_ARTIFACT_LABELS = ["ATTACHED", "DONE"];
 const GENERIC_ARTIFACT_LABEL_SET = new Set(GENERIC_ARTIFACT_LABELS);
+const GENERIC_DOWNLOAD_CONTROL_PATTERN = /(?:^|\b)(?:download|save)(?:\b|$)/i;
 
 export function parseSnapshotEntries(snapshot) {
   return String(snapshot || "")
@@ -29,11 +30,61 @@ function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function sanitizeArtifactLabel(value) {
+  const normalized = normalizeText(value).replace(/^[^A-Za-z0-9._~/-]+|[^A-Za-z0-9._~/-]+$/g, "");
+  if (!normalized) return "";
+  const basename = normalized.split(/[\\/]/).filter(Boolean).at(-1) || "";
+  return basename.replace(/^[^A-Za-z0-9._-]+|[^A-Za-z0-9._-]+$/g, "");
+}
+
+export function extractArtifactLabels(value) {
+  const seen = new Set();
+  const labels = [];
+  for (const match of String(value || "").matchAll(FILE_LABEL_PATTERN)) {
+    const normalized = sanitizeArtifactLabel(match[1] || match[0] || "");
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    labels.push(normalized);
+  }
+  return labels;
+}
+
 export function isLikelyArtifactLabel(label) {
   const normalized = normalizeText(label);
   if (!normalized) return false;
   if (GENERIC_ARTIFACT_LABEL_SET.has(normalized.toUpperCase())) return true;
-  return FILE_LABEL_PATTERN.test(normalized);
+  return extractArtifactLabels(normalized).length > 0;
+}
+
+function hasGenericDownloadControl(controlLabel) {
+  return GENERIC_DOWNLOAD_CONTROL_PATTERN.test(normalizeText(controlLabel));
+}
+
+function normalizeCandidate(candidate) {
+  const label = normalizeText(candidate?.label);
+  return label ? { ...candidate, label } : undefined;
+}
+
+function hasArtifactSignal(candidate) {
+  const label = normalizeText(candidate?.label);
+  if (!isLikelyArtifactLabel(label)) return false;
+
+  const paragraphInteractiveCount = Number(candidate?.paragraphInteractiveCount || 0);
+  const listItemInteractiveCount = Number(candidate?.listItemInteractiveCount || 0);
+  const focusableInteractiveCount = Number(candidate?.focusableInteractiveCount || 0);
+  const paragraphArtifactLabelCount = Number(candidate?.paragraphArtifactLabelCount || 0);
+  const listItemArtifactLabelCount = Number(candidate?.listItemArtifactLabelCount || 0);
+  const focusableArtifactLabelCount = Number(candidate?.focusableArtifactLabelCount || 0);
+
+  return (
+    hasGenericDownloadControl(candidate?.controlLabel) ||
+    paragraphInteractiveCount > 0 ||
+    listItemInteractiveCount > 0 ||
+    focusableInteractiveCount > 0 ||
+    paragraphArtifactLabelCount > 0 ||
+    listItemArtifactLabelCount > 0 ||
+    focusableArtifactLabelCount > 0
+  );
 }
 
 export function isStructuralArtifactCandidate(candidate) {
@@ -41,36 +92,56 @@ export function isStructuralArtifactCandidate(candidate) {
   if (!isLikelyArtifactLabel(label)) return false;
 
   const listItemText = normalizeText(candidate?.listItemText);
-  const listItemFileButtonCount = Number(candidate?.listItemFileButtonCount || 0);
-  const paragraphFileButtonCount = Number(candidate?.paragraphFileButtonCount || 0);
+  const listItemInteractiveCount = Number(candidate?.listItemInteractiveCount || 0);
+  const listItemArtifactLabelCount = Number(candidate?.listItemArtifactLabelCount || 0);
+  const paragraphInteractiveCount = Number(candidate?.paragraphInteractiveCount || 0);
+  const paragraphArtifactLabelCount = Number(candidate?.paragraphArtifactLabelCount || 0);
   const paragraphOtherTextLength = Number(candidate?.paragraphOtherTextLength ?? Number.POSITIVE_INFINITY);
-  const focusableFileButtonCount = Number(candidate?.focusableFileButtonCount || 0);
+  const focusableInteractiveCount = Number(candidate?.focusableInteractiveCount || 0);
+  const focusableArtifactLabelCount = Number(candidate?.focusableArtifactLabelCount || 0);
   const focusableOtherTextLength = Number(candidate?.focusableOtherTextLength ?? Number.POSITIVE_INFINITY);
 
-  if (listItemText === label && listItemFileButtonCount === 1) {
+  if (listItemText === label && listItemInteractiveCount === 1 && listItemArtifactLabelCount === 1) {
     return true;
   }
 
-  if (paragraphFileButtonCount === 1 && paragraphOtherTextLength <= 32) {
+  if (paragraphArtifactLabelCount === 1 && paragraphInteractiveCount === 1 && paragraphOtherTextLength <= 32) {
     return true;
   }
 
-  if (focusableFileButtonCount >= 1 && focusableOtherTextLength <= 64) {
+  if (focusableArtifactLabelCount >= 1 && focusableInteractiveCount >= 1 && focusableOtherTextLength <= 64) {
     return true;
   }
 
   return false;
 }
 
-export function filterStructuralArtifactCandidates(candidates) {
-  const seen = new Set();
-  const filtered = [];
+export function partitionStructuralArtifactCandidates(candidates) {
+  const confirmedSeen = new Set();
+  const suspiciousSeen = new Set();
+  const confirmed = [];
+  const suspicious = [];
+
   for (const candidate of candidates || []) {
-    const label = normalizeText(candidate?.label);
-    if (!label || seen.has(label)) continue;
-    if (!isStructuralArtifactCandidate(candidate)) continue;
-    seen.add(label);
-    filtered.push({ label });
+    const normalized = normalizeCandidate(candidate);
+    if (!normalized) continue;
+    if (!hasArtifactSignal(normalized)) continue;
+
+    if (isStructuralArtifactCandidate(normalized)) {
+      if (confirmedSeen.has(normalized.label)) continue;
+      confirmedSeen.add(normalized.label);
+      confirmed.push(normalized);
+      continue;
+    }
+
+    if (suspiciousSeen.has(normalized.label)) continue;
+    suspiciousSeen.add(normalized.label);
+    suspicious.push(normalized);
   }
-  return filtered;
+
+  return { confirmed, suspicious: suspicious.filter((candidate) => !confirmedSeen.has(candidate.label)) };
+}
+
+export function filterStructuralArtifactCandidates(candidates) {
+  return partitionStructuralArtifactCandidates(candidates).confirmed;
 }

@@ -7,7 +7,7 @@ import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { DEFAULT_CONFIG, type OracleConfig } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies, type ImportedAuthCookie } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
-import { filterStructuralArtifactCandidates, parseSnapshotEntries } from "../extensions/oracle/worker/artifact-heuristics.mjs";
+import { extractArtifactLabels, filterStructuralArtifactCandidates, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
   acquireLock as acquireWorkerStateLock,
   createLease as createWorkerStateLease,
@@ -3227,45 +3227,84 @@ async function testSanityRunnerIsolation(): Promise<void> {
 }
 
 function testArtifactCandidateHeuristics(): void {
+  assert(
+    JSON.stringify(extractArtifactLabels("Created /mnt/data/butterscotch.txt")) === JSON.stringify(["butterscotch.txt"]),
+    "artifact label extraction should collapse paths to basenames",
+  );
+  assert(
+    JSON.stringify(extractArtifactLabels("dog.txt cat.txt")) === JSON.stringify(["dog.txt", "cat.txt"]),
+    "artifact label extraction should preserve multiple filenames",
+  );
+  assert(
+    JSON.stringify(extractArtifactLabels("hello\nbutterscotch.txt")) === JSON.stringify(["butterscotch.txt"]),
+    "artifact label extraction should ignore surrounding prose lines",
+  );
+
   const successCandidates = filterStructuralArtifactCandidates([
     {
       label: "sup-homie.txt",
       paragraphText: "Created the artifact: sup-homie.txt",
       listItemText: "",
-      paragraphFileButtonCount: 1,
+      paragraphInteractiveCount: 1,
+      paragraphArtifactLabelCount: 1,
       paragraphOtherTextLength: 21,
-      listItemFileButtonCount: 0,
-      focusableFileButtonCount: 1,
+      listItemInteractiveCount: 0,
+      listItemArtifactLabelCount: 0,
+      focusableInteractiveCount: 1,
+      focusableArtifactLabelCount: 1,
       focusableOtherTextLength: 21,
     },
     {
       label: "linked-download.txt",
       paragraphText: "linked-download.txt",
       listItemText: "linked-download.txt",
-      paragraphFileButtonCount: 1,
+      paragraphInteractiveCount: 1,
+      paragraphArtifactLabelCount: 1,
       paragraphOtherTextLength: 0,
-      listItemFileButtonCount: 1,
-      focusableFileButtonCount: 1,
+      listItemInteractiveCount: 1,
+      listItemArtifactLabelCount: 1,
+      focusableInteractiveCount: 1,
+      focusableArtifactLabelCount: 1,
       focusableOtherTextLength: 0,
     },
     {
       label: "Attached",
       paragraphText: "Attached",
       listItemText: "Attached",
-      paragraphFileButtonCount: 1,
+      paragraphInteractiveCount: 1,
+      paragraphArtifactLabelCount: 1,
       paragraphOtherTextLength: 0,
-      listItemFileButtonCount: 1,
-      focusableFileButtonCount: 1,
+      listItemInteractiveCount: 1,
+      listItemArtifactLabelCount: 1,
+      focusableInteractiveCount: 1,
+      focusableArtifactLabelCount: 1,
       focusableOtherTextLength: 0,
     },
     {
       label: "Done",
       paragraphText: "Done",
       listItemText: "Done",
-      paragraphFileButtonCount: 1,
+      paragraphInteractiveCount: 1,
+      paragraphArtifactLabelCount: 1,
       paragraphOtherTextLength: 0,
-      listItemFileButtonCount: 1,
-      focusableFileButtonCount: 1,
+      listItemInteractiveCount: 1,
+      listItemArtifactLabelCount: 1,
+      focusableInteractiveCount: 1,
+      focusableArtifactLabelCount: 1,
+      focusableOtherTextLength: 0,
+    },
+    {
+      label: "butterscotch.txt",
+      controlLabel: "Download",
+      paragraphText: "butterscotch.txt Download",
+      listItemText: "butterscotch.txt Download",
+      paragraphInteractiveCount: 1,
+      paragraphArtifactLabelCount: 1,
+      paragraphOtherTextLength: 0,
+      listItemInteractiveCount: 1,
+      listItemArtifactLabelCount: 1,
+      focusableInteractiveCount: 1,
+      focusableArtifactLabelCount: 1,
       focusableOtherTextLength: 0,
     },
   ]);
@@ -3273,26 +3312,33 @@ function testArtifactCandidateHeuristics(): void {
   assert(successCandidates.some((candidate) => candidate.label === "linked-download.txt"), "artifact heuristics should preserve link-rendered downloadable artifacts");
   assert(successCandidates.some((candidate) => candidate.label === "Attached"), "artifact heuristics should preserve generic Attached download controls");
   assert(successCandidates.some((candidate) => candidate.label === "Done"), "artifact heuristics should preserve generic Done download controls");
+  assert(successCandidates.some((candidate) => candidate.label === "butterscotch.txt"), "artifact heuristics should map generic Download controls onto nearby file labels");
 
   const falsePositiveCandidates = filterStructuralArtifactCandidates([
     {
       label: "package.json",
       paragraphText: "Related process issue: the current flow is still self-inconsistent. check:release starts with the clean-tree guard in package.json via scripts/check-clean-worktree.mjs, while the README says to regenerate provider QA bundles first and then run release check in README.md.",
       listItemText: "",
-      paragraphFileButtonCount: 3,
+      paragraphInteractiveCount: 3,
+      paragraphArtifactLabelCount: 3,
       paragraphOtherTextLength: 180,
-      listItemFileButtonCount: 0,
-      focusableFileButtonCount: 3,
+      listItemInteractiveCount: 0,
+      listItemArtifactLabelCount: 0,
+      focusableInteractiveCount: 3,
+      focusableArtifactLabelCount: 3,
       focusableOtherTextLength: 180,
     },
     {
       label: "scripts/check-clean-worktree.mjs",
       paragraphText: "Related process issue: the current flow is still self-inconsistent. check:release starts with the clean-tree guard in package.json via scripts/check-clean-worktree.mjs, while the README says to regenerate provider QA bundles first and then run release check in README.md.",
       listItemText: "",
-      paragraphFileButtonCount: 3,
+      paragraphInteractiveCount: 3,
+      paragraphArtifactLabelCount: 3,
       paragraphOtherTextLength: 180,
-      listItemFileButtonCount: 0,
-      focusableFileButtonCount: 3,
+      listItemInteractiveCount: 0,
+      listItemArtifactLabelCount: 0,
+      focusableInteractiveCount: 3,
+      focusableArtifactLabelCount: 3,
       focusableOtherTextLength: 180,
     },
   ]);
@@ -3303,36 +3349,64 @@ function testArtifactCandidateHeuristics(): void {
       label: "report.csv",
       paragraphText: "report.csv",
       listItemText: "report.csv",
-      paragraphFileButtonCount: 1,
+      paragraphInteractiveCount: 1,
+      paragraphArtifactLabelCount: 1,
       paragraphOtherTextLength: 0,
-      listItemFileButtonCount: 1,
-      focusableFileButtonCount: 1,
+      listItemInteractiveCount: 1,
+      listItemArtifactLabelCount: 1,
+      focusableInteractiveCount: 1,
+      focusableArtifactLabelCount: 1,
       focusableOtherTextLength: 0,
     },
     {
       label: "dog.txt",
       paragraphText: "dog.txt cat.txt",
       listItemText: "",
-      paragraphFileButtonCount: 2,
+      paragraphInteractiveCount: 2,
+      paragraphArtifactLabelCount: 2,
       paragraphOtherTextLength: 0,
-      listItemFileButtonCount: 0,
-      focusableFileButtonCount: 2,
+      listItemInteractiveCount: 0,
+      listItemArtifactLabelCount: 0,
+      focusableInteractiveCount: 2,
+      focusableArtifactLabelCount: 2,
       focusableOtherTextLength: 8,
     },
     {
       label: "cat.txt",
       paragraphText: "dog.txt cat.txt",
       listItemText: "",
-      paragraphFileButtonCount: 2,
+      paragraphInteractiveCount: 2,
+      paragraphArtifactLabelCount: 2,
       paragraphOtherTextLength: 0,
-      listItemFileButtonCount: 0,
-      focusableFileButtonCount: 2,
+      listItemInteractiveCount: 0,
+      listItemArtifactLabelCount: 0,
+      focusableInteractiveCount: 2,
+      focusableArtifactLabelCount: 2,
       focusableOtherTextLength: 8,
     },
   ]);
   assert(artifactOnlyCandidates.some((candidate) => candidate.label === "report.csv"), "empty artifact-only responses should still allow artifact capture");
   assert(artifactOnlyCandidates.some((candidate) => candidate.label === "dog.txt"), "compact multi-file artifact blocks should still allow artifact capture");
   assert(artifactOnlyCandidates.some((candidate) => candidate.label === "cat.txt"), "compact multi-file artifact blocks should still allow artifact capture");
+
+  const suspiciousOnlyCandidates = partitionStructuralArtifactCandidates([
+    {
+      label: "ghost.txt",
+      controlLabel: "Download",
+      paragraphText: "ghost.txt Download more context that makes the structure ambiguous and too long to trust safely in one shot",
+      listItemText: "",
+      paragraphInteractiveCount: 2,
+      paragraphArtifactLabelCount: 1,
+      paragraphOtherTextLength: 90,
+      listItemInteractiveCount: 0,
+      listItemArtifactLabelCount: 0,
+      focusableInteractiveCount: 2,
+      focusableArtifactLabelCount: 1,
+      focusableOtherTextLength: 90,
+    },
+  ]);
+  assert(suspiciousOnlyCandidates.confirmed.length === 0, "ambiguous download controls should not be treated as confirmed artifact candidates");
+  assert(suspiciousOnlyCandidates.suspicious.some((candidate) => candidate.label === "ghost.txt"), "ambiguous download controls should still surface a suspicious artifact signal");
 }
 
 async function testPollerHostSafety(): Promise<void> {

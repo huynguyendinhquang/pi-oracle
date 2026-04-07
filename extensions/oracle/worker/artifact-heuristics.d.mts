@@ -10,20 +10,36 @@ export interface SnapshotEntry {
 
 export interface StructuralArtifactCandidateInput {
   label?: string;
+  selector?: string;
+  controlLabel?: string;
   paragraphText?: string;
   listItemText?: string;
-  paragraphFileButtonCount?: number;
+  paragraphInteractiveCount?: number;
+  paragraphArtifactLabelCount?: number;
   paragraphOtherTextLength?: number;
-  listItemFileButtonCount?: number;
-  focusableFileButtonCount?: number;
+  listItemInteractiveCount?: number;
+  listItemArtifactLabelCount?: number;
+  focusableInteractiveCount?: number;
+  focusableArtifactLabelCount?: number;
   focusableOtherTextLength?: number;
 }
 
 export interface StructuralArtifactCandidate {
   label: string;
+  selector?: string;
+  controlLabel?: string;
+}
+
+export interface StructuralArtifactCandidatePartition {
+  confirmed: StructuralArtifactCandidate[];
+  suspicious: StructuralArtifactCandidate[];
 }
 
 export function parseSnapshotEntries(snapshot: string): SnapshotEntry[];
+export function extractArtifactLabels(value: string): string[];
 export function filterStructuralArtifactCandidates(
   candidates: StructuralArtifactCandidateInput[],
 ): StructuralArtifactCandidate[];
+export function partitionStructuralArtifactCandidates(
+  candidates: StructuralArtifactCandidateInput[],
+): StructuralArtifactCandidatePartition;
