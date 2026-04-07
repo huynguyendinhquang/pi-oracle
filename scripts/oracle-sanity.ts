@@ -1522,6 +1522,7 @@ async function testManualReadsSettleWakeupRetries(config: OracleConfig): Promise
     hasUI: true,
     ui: createUiStub(),
   };
+  const expectedSessionKey = getPollerSessionKey(sessionFile, process.cwd());
 
   const setRetryEligible = async (jobId: string) => {
     await updateJob(jobId, (job) => ({
@@ -1529,6 +1530,14 @@ async function testManualReadsSettleWakeupRetries(config: OracleConfig): Promise
       wakeupAttemptCount: 1,
       wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
       wakeupSettledAt: undefined,
+      wakeupSettledSource: undefined,
+      wakeupSettledSessionFile: undefined,
+      wakeupSettledSessionKey: undefined,
+      wakeupSettledBeforeFirstAttempt: undefined,
+      wakeupObservedAt: undefined,
+      wakeupObservedSource: undefined,
+      wakeupObservedSessionFile: undefined,
+      wakeupObservedSessionKey: undefined,
     }));
   };
 
@@ -1547,7 +1556,12 @@ async function testManualReadsSettleWakeupRetries(config: OracleConfig): Promise
   try {
     await setRetryEligible(readJobId);
     await readTool.execute("oracle-read-settles-wakeup", { jobId: readJobId }, undefined, () => {}, ctx);
-    assert(Boolean(readJob(readJobId)?.wakeupSettledAt), "oracle read should mark terminal jobs settled after a manual read");
+    const readSettled = readJob(readJobId);
+    assert(Boolean(readSettled?.wakeupSettledAt), "oracle read should mark terminal jobs settled after a manual read");
+    assert(readSettled?.wakeupSettledSource === "oracle_read", "oracle read settlement should persist provenance for the settling path");
+    assert(readSettled?.wakeupSettledSessionFile === sessionFile, "oracle read settlement should persist the settling session file");
+    assert(readSettled?.wakeupSettledSessionKey === expectedSessionKey, "oracle read settlement should persist the settling session key");
+    assert(readSettled?.wakeupSettledBeforeFirstAttempt === false, "oracle read settlement after a wake-up attempt should record that it was not a pre-send settle");
     await assertNoFurtherWakeup(readJobId, "oracle read should stop further best-effort wake-up retries once the terminal job has been manually inspected");
   } finally {
     await cleanupJob(readJobId);
@@ -1557,10 +1571,85 @@ async function testManualReadsSettleWakeupRetries(config: OracleConfig): Promise
   try {
     await setRetryEligible(statusJobId);
     await statusCommand.handler(statusJobId, ctx);
-    assert(Boolean(readJob(statusJobId)?.wakeupSettledAt), "oracle status should mark terminal jobs settled after a manual status read");
+    const statusSettled = readJob(statusJobId);
+    assert(Boolean(statusSettled?.wakeupSettledAt), "oracle status should mark terminal jobs settled after a manual status read");
+    assert(statusSettled?.wakeupSettledSource === "oracle_status", "oracle status settlement should persist provenance for the settling path");
+    assert(statusSettled?.wakeupSettledSessionFile === sessionFile, "oracle status settlement should persist the settling session file");
+    assert(statusSettled?.wakeupSettledSessionKey === expectedSessionKey, "oracle status settlement should persist the settling session key");
+    assert(statusSettled?.wakeupSettledBeforeFirstAttempt === false, "oracle status settlement after a wake-up attempt should record that it was not a pre-send settle");
     await assertNoFurtherWakeup(statusJobId, "oracle status should stop further best-effort wake-up retries once the terminal job has been manually inspected");
   } finally {
     await cleanupJob(statusJobId);
+    await rm(fakeWorkerPath, { force: true });
+  }
+}
+
+async function testPreSendStatusObservationDoesNotSuppressFirstWakeup(config: OracleConfig): Promise<void> {
+  await rm(getOracleStateDir(), { recursive: true, force: true });
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-pre-send-status-worker-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
+
+  const pi: any = {
+    tools: new Map<string, any>(),
+    commands: new Map<string, any>(),
+    registerTool(definition: any) {
+      this.tools.set(definition.name, definition);
+    },
+    registerCommand(name: string, definition: any) {
+      this.commands.set(name, definition);
+    },
+    sendMessage: () => {},
+  };
+  registerOracleTools(pi, fakeWorkerPath);
+  registerOracleCommands(pi, fakeWorkerPath, fakeWorkerPath);
+  const statusCommand = pi.commands.get("oracle-status");
+  assert(statusCommand, "oracle status command should register for pre-send observation coverage");
+
+  const sessionManager = createPersistedSessionManager("oracle-pre-send-status");
+  const sessionFile = sessionManager.getSessionFile();
+  assert(sessionFile, "pre-send status observation test should persist a session file");
+  const expectedSessionKey = getPollerSessionKey(sessionFile, process.cwd());
+  const ctx: any = {
+    cwd: process.cwd(),
+    sessionManager,
+    hasUI: true,
+    ui: createUiStub(),
+  };
+
+  const assertWakeupCount = async (jobId: string, expectedCount: number, message: string) => {
+    const sent: Array<{ details?: { jobId?: string } }> = [];
+    await scanOracleJobsOnce({
+      sendMessage(payload: any) {
+        sent.push(payload);
+      },
+    } as any, createPollerCtx(sessionManager) as any, fakeWorkerPath);
+    stopPollerForSession(sessionFile, process.cwd());
+    assert(sent.length === expectedCount, message);
+  };
+
+  const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
+  try {
+    await statusCommand.handler(jobId, ctx);
+    const observed = readJob(jobId);
+    assert(!observed?.wakeupSettledAt, "pre-send oracle status inspection should not settle the very first wake-up attempt");
+    assert(observed?.wakeupObservedSource === "oracle_status", "pre-send oracle status inspection should persist observation provenance");
+    assert(observed?.wakeupObservedSessionFile === sessionFile, "pre-send oracle status inspection should persist the observing session file");
+    assert(observed?.wakeupObservedSessionKey === expectedSessionKey, "pre-send oracle status inspection should persist the observing session key");
+
+    await assertWakeupCount(jobId, 1, "pre-send oracle status inspection should still allow the first wake-up attempt to fire");
+    assert(readJob(jobId)?.wakeupAttemptCount === 1, "pre-send oracle status inspection should leave the job eligible for the first bounded wake-up attempt");
+
+    await statusCommand.handler(jobId, ctx);
+    const settled = readJob(jobId);
+    assert(Boolean(settled?.wakeupSettledAt), "oracle status should settle once a real wake-up attempt has already been sent");
+    assert(settled?.wakeupSettledSource === "oracle_status", "post-send oracle status settlement should preserve provenance");
+    assert(settled?.wakeupSettledSessionFile === sessionFile, "post-send oracle status settlement should persist the settling session file");
+    assert(settled?.wakeupSettledSessionKey === expectedSessionKey, "post-send oracle status settlement should persist the settling session key");
+    assert(settled?.wakeupSettledBeforeFirstAttempt === false, "post-send oracle status settlement should record that the first wake-up attempt had already happened");
+
+    await assertWakeupCount(jobId, 0, "settled jobs should not emit any further wake-up retries after the manual post-send status inspection");
+  } finally {
+    await cleanupJob(jobId);
     await rm(fakeWorkerPath, { force: true });
   }
 }
@@ -2850,8 +2939,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
   assert(toolsSource.includes("`artifacts: ${getJobDir(current.id)}/artifacts`"), "oracle read should derive artifact paths from the configured jobs dir instead of hard-coding /tmp");
-  assert(toolsSource.includes("await markWakeupSettled(job.id)"), "oracle read should settle further wake-up retries once a terminal job has been manually read");
-  assert(commandsSource.includes("await markWakeupSettled(job.id);"), "oracle status should settle further wake-up retries once a terminal job has been manually inspected");
+  assert(toolsSource.includes("source: \"oracle_read\""), "oracle read should pass explicit settlement provenance when a terminal job has been manually read");
+  assert(commandsSource.includes("source: \"oracle_status\""), "oracle status should pass explicit settlement provenance when a terminal job has been manually inspected");
   assert(jobsSource.includes("requirePersistedSessionFile(originSessionFile, \"create oracle jobs\")"), "oracle jobs should require a persisted session identity at creation time");
   assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
   assert(toolsSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle tool guidance should describe whole-repo auto-pruning when archives are still too large");
@@ -2903,6 +2992,10 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("if (!shouldRequestWakeup(current, nowMs)) return undefined;"), "notification claims should re-check wake-up retry eligibility under the job lock to block stale second claimants");
   assert(jobsSource.includes("notificationSessionFile"), "jobs should persist the durable session file path for wake-up-target tracking");
   assert(jobsSource.includes("recordNotificationTarget"), "jobs should persist the intended notification target before best-effort wake-up delivery so retries can recover idempotently");
+  assert(jobsSource.includes("wakeupSettledSource"), "wake-up settlement should persist provenance for later RCA attribution");
+  assert(jobsSource.includes("wakeupObservedAt"), "pre-send manual observation should be recorded separately from wake-up settlement");
+  assert(jobsSource.includes("beforeFirstAttempt && !options.allowBeforeFirstAttempt"), "pre-send manual observations should not silently suppress the first wake-up attempt");
+  assert(jobsSource.includes("wakeupSettledBeforeFirstAttempt"), "wake-up settlement should record whether it happened before the first reminder attempt");
   assert(jobsSource.includes("ORACLE_WAKEUP_POST_SEND_RETENTION_MS"), "jobs should keep wake-up-target files around for a short post-send retention grace window");
   assert(jobsSource.includes("wakeupRetentionGraceIsActive"), "jobs should detect recently sent wake-ups when deciding whether removal/pruning is safe");
   assert(jobsSource.includes("if (job.status === \"complete\" || job.status === \"cancelled\") {"), "job pruning should treat complete/cancelled retention as an explicit age-based policy under the wake-up-only model");
@@ -3305,6 +3398,7 @@ async function main() {
   await testOracleSubmitRejectsMissingSessionIdentity();
   await testOracleReadUsesConfiguredJobsDir(config);
   await testManualReadsSettleWakeupRetries(config);
+  await testPreSendStatusObservationDoesNotSuppressFirstWakeup(config);
   await testPollerNotification(config);
   await testOracleExtensionSkipsNoSessionWakeupRouting(config);
   await testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config);

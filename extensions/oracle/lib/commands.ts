@@ -121,7 +121,11 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         return;
       }
       if (isTerminalOracleJob(job)) {
-        await markWakeupSettled(job.id);
+        await markWakeupSettled(job.id, {
+          source: "oracle_status",
+          sessionFile: ctx.sessionManager.getSessionFile?.(),
+          cwd: ctx.cwd,
+        });
       }
       ctx.ui.notify(summarizeJob(job.id), "info");
     },

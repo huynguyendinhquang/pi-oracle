@@ -336,6 +336,14 @@ Important fields include:
 - `wakeupAttemptCount`
 - `wakeupLastRequestedAt`
 - `wakeupSettledAt`
+- `wakeupSettledSource`
+- `wakeupSettledSessionFile`
+- `wakeupSettledSessionKey`
+- `wakeupSettledBeforeFirstAttempt`
+- `wakeupObservedAt`
+- `wakeupObservedSource`
+- `wakeupObservedSessionFile`
+- `wakeupObservedSessionKey`
 - `notifyClaimedAt`
 - `notifyClaimedBy`
 - `artifactFailureCount`
@@ -462,7 +470,8 @@ The extension still uses the same general `pi`-native background completion patt
 - completed job durability lives in oracle job state plus saved response/artifact files, not in synthetic session-history assistant messages
 - when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues bounded best-effort wake-up reminders to whichever matching session is currently live
 - those wake-ups direct the receiver to `oracle_read(jobId)` as the canonical completion-consumption path, while still surfacing saved response/artifact paths as secondary context
-- manual `oracle_read` or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened
+- manual `oracle_read` or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened and persists provenance about which path/session settled the wake-up
+- manual inspection before the first wake-up attempt is recorded separately as observation metadata and does not suppress the first reminder send
 - if no wake-up lands, the job remains available via `/oracle-status`, `oracle_read`, and the saved `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` response/artifact files
 - because completion delivery is best-effort, pruning uses explicit terminal-job age policy instead of pretending a durable session notification happened
 - recently sent wake-ups keep response/artifact files retained briefly so follow-up turns do not point at deleted paths if cleanup or pruning races with delivery

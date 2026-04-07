@@ -25,6 +25,8 @@ export type OracleJobPhase =
   | "failed"
   | "cancelled";
 
+export type OracleWakeupSettlementSource = "oracle_read" | "oracle_status";
+
 export const ACTIVE_ORACLE_JOB_STATUSES: OracleJobStatus[] = ["preparing", "submitted", "waiting"];
 export const OPEN_ORACLE_JOB_STATUSES: OracleJobStatus[] = ["queued", ...ACTIVE_ORACLE_JOB_STATUSES];
 export const TERMINAL_ORACLE_JOB_STATUSES: OracleJobStatus[] = ["complete", "failed", "cancelled"];
@@ -151,6 +153,14 @@ export interface OracleJob {
   wakeupAttemptCount?: number;
   wakeupLastRequestedAt?: string;
   wakeupSettledAt?: string;
+  wakeupSettledSource?: OracleWakeupSettlementSource;
+  wakeupSettledSessionFile?: string;
+  wakeupSettledSessionKey?: string;
+  wakeupSettledBeforeFirstAttempt?: boolean;
+  wakeupObservedAt?: string;
+  wakeupObservedSource?: OracleWakeupSettlementSource;
+  wakeupObservedSessionFile?: string;
+  wakeupObservedSessionKey?: string;
   notifyClaimedAt?: string;
   notifyClaimedBy?: string;
   artifactFailureCount?: number;
@@ -793,12 +803,57 @@ export async function noteWakeupRequested(jobId: string, at = new Date().toISOSt
   }
 }
 
-export async function markWakeupSettled(jobId: string, at = new Date().toISOString()): Promise<OracleJob | undefined> {
+function getWakeupSessionKey(sessionFile: string | undefined, cwd: string | undefined): string | undefined {
+  if (!sessionFile || !cwd) return undefined;
+  const projectId = getProjectId(cwd);
+  return `${projectId}::${getSessionId(sessionFile, projectId)}`;
+}
+
+export async function markWakeupSettled(
+  jobId: string,
+  options: {
+    source: OracleWakeupSettlementSource;
+    sessionFile?: string;
+    cwd?: string;
+    at?: string;
+    allowBeforeFirstAttempt?: boolean;
+  },
+): Promise<OracleJob | undefined> {
+  const at = options.at ?? new Date().toISOString();
+  const sessionKey = getWakeupSessionKey(options.sessionFile, options.cwd);
+
   try {
-    return await updateJob(jobId, (job) => ({
-      ...job,
-      wakeupSettledAt: job.wakeupSettledAt ?? at,
-    }));
+    return await updateJob(jobId, (job) => {
+      const beforeFirstAttempt = !job.wakeupLastRequestedAt && (job.wakeupAttemptCount ?? 0) === 0;
+      if (job.wakeupSettledAt) {
+        return {
+          ...job,
+          wakeupSettledSource: job.wakeupSettledSource ?? options.source,
+          wakeupSettledSessionFile: job.wakeupSettledSessionFile ?? options.sessionFile,
+          wakeupSettledSessionKey: job.wakeupSettledSessionKey ?? sessionKey,
+          wakeupSettledBeforeFirstAttempt: job.wakeupSettledBeforeFirstAttempt ?? beforeFirstAttempt,
+        };
+      }
+
+      if (beforeFirstAttempt && !options.allowBeforeFirstAttempt) {
+        return {
+          ...job,
+          wakeupObservedAt: job.wakeupObservedAt ?? at,
+          wakeupObservedSource: job.wakeupObservedSource ?? options.source,
+          wakeupObservedSessionFile: job.wakeupObservedSessionFile ?? options.sessionFile,
+          wakeupObservedSessionKey: job.wakeupObservedSessionKey ?? sessionKey,
+        };
+      }
+
+      return {
+        ...job,
+        wakeupSettledAt: at,
+        wakeupSettledSource: options.source,
+        wakeupSettledSessionFile: options.sessionFile,
+        wakeupSettledSessionKey: sessionKey,
+        wakeupSettledBeforeFirstAttempt: beforeFirstAttempt,
+      };
+    });
   } catch {
     return readJob(jobId);
   }

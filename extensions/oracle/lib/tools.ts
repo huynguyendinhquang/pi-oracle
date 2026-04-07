@@ -887,7 +887,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       if (!job || job.projectId !== getProjectId(ctx.cwd)) {
         throw new Error(`Oracle job not found in this project: ${params.jobId}`);
       }
-      const latest = isTerminalOracleJob(job) ? await markWakeupSettled(job.id) : job;
+      const latest = isTerminalOracleJob(job)
+        ? await markWakeupSettled(job.id, {
+          source: "oracle_read",
+          sessionFile: getSessionFile(ctx),
+          cwd: ctx.cwd,
+        })
+        : job;
       const current = latest ?? readJob(job.id) ?? job;
 
       let responsePreview = "";
