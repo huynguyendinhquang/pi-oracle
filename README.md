@@ -136,6 +136,7 @@ Detailed design and maintainer docs:
 Completion notification semantics:
 - oracle responses and artifacts are always persisted durably in oracle job state under the configured oracle jobs dir (`${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default)
 - completion delivery into pi sessions is best-effort wake-up based; the extension no longer appends synthetic assistant completion messages into session history
+- wake-up content tells the receiving assistant to call `oracle_read(jobId)` as the canonical completion-consumption path, with saved file paths included as secondary context
 - manual `oracle_read` or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened
 - if a wake-up does not land, the job remains available via its saved response/artifacts and status commands
 

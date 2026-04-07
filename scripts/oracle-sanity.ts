@@ -1301,7 +1301,7 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   await releaseRuntimeLease(readJob(jobId)?.runtimeId);
   await completeJob(jobId);
 
-  const sent: Array<{ details?: { jobId?: string } }> = [];
+  const sent: Array<{ content?: string; details?: { jobId?: string } }> = [];
   const pi: any = {
     sendMessage(message: any) {
       sent.push(message);
@@ -1322,6 +1322,14 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   assert(!findNotificationEntry(reopenedSession, jobId), "same-session live pollers should not append a durable oracle completion message directly into the active session history");
   assert(sent.length >= 1, `expected at least one best-effort wake-up request, saw ${sent.length}`);
   assert(sent[0]?.details?.jobId === jobId, "poller should request wake-up for the expected job id");
+  const deliveredJob = readJob(jobId);
+  assert(deliveredJob?.responsePath, "poller notification coverage should retain the response path");
+  const notificationText = sent[0]?.content;
+  assert(typeof notificationText === "string", "poller should send text wake-up content");
+  assert(notificationText.includes(`Use oracle_read with jobId ${jobId}`), "poller wake-up content should direct the receiving assistant to oracle_read so reminder retries can settle");
+  assert(notificationText.includes(`Response file: ${deliveredJob.responsePath}`), "poller wake-up content should still include the persisted response path as secondary context");
+  assert(notificationText.includes(`Artifacts: ${getJobDir(jobId)}/artifacts`), "poller wake-up content should still include the persisted artifacts directory");
+  assert(!notificationText.includes("Read response:"), "poller wake-up content should not steer the receiver toward a raw response-file read as the primary action");
   assert(!readJob(jobId)?.notifiedAt, "same-session live pollers should leave jobs unnotified while completion delivery remains best-effort only");
   await cleanupJob(jobId);
 }
@@ -2799,6 +2807,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable before send");
   assert(pollerSource.includes("requestWakeupTurn(pi, deliverable)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
   assert(pollerSource.includes("buildNotificationContent(job)"), "poller wake-up turns should include durable response/artifact paths from job state");
+  assert(pollerSource.includes("Use oracle_read with jobId"), "poller wake-up content should direct receivers to oracle_read so reminder retries settle through the canonical path");
+  assert(!pollerSource.includes("Read response:"), "poller wake-up content should no longer steer receivers toward raw response-file reads as the primary action");
   assert(pollerSource.includes("getJobDir(job.id)"), "poller wake-up content should derive artifact/response paths from the configured oracle jobs dir instead of hard-coding /tmp");
   assert(pollerSource.includes("beforeNotificationPersist"), "poller should support a last-moment revalidation hook before wake-up delivery for regression coverage");
   assert(!pollerSource.includes("manager.setSessionFile(sessionFile)"), "poller should not discard live in-memory session history by reloading the current session manager before completion delivery");

@@ -180,9 +180,10 @@ function buildNotificationContent(job: OraclePollerJob): string {
   const artifactsPath = `${getJobDir(job.id)}/artifacts`;
   return [
     `Oracle job ${job.id} is ${job.status}.`,
-    `Read response: ${responsePath}`,
+    `Use oracle_read with jobId ${job.id} to open the response and settle wake-up retries.`,
+    `Response file: ${responsePath}`,
     `Artifacts: ${artifactsPath}`,
-    job.error ? `Error: ${job.error}` : "Continue from the oracle output.",
+    job.error ? `Error: ${job.error}` : "After oracle_read, continue from the oracle output.",
   ].join("\n");
 }
 
