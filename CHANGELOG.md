@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-04-07
+
+### Fixed
+- wake-up guidance now tells receivers to use `oracle_read(jobId)` as the canonical way to consume completion results
+- manual inspection before the first wake-up no longer suppresses the initial reminder attempt
+- wake-up settlement now records provenance so suppressed/settled delivery can be explained in postmortems
+- queued archive cleanup retries now retry queued archive deletion and keep warnings until cleanup succeeds
+- queued archive byte-pressure accounting now includes retained pre-submit archives instead of only currently queued jobs
+
 ## 0.2.0 - 2026-04-06
 
 ### Added
