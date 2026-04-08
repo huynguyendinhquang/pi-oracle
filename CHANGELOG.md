@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2 - 2026-04-07
+
+### Fixed
+- missed ChatGPT file artifacts now map generic download controls onto nearby filenames and download from live DOM selectors instead of relying only on filename-labeled snapshot refs
+- oracle jobs no longer report a false-clean completion when response-local artifact signals are present but capture fails or remains inconclusive
+- artifact label extraction now collapses paths and mixed response text down to real filenames so suspicious artifact fallback logic does not emit bogus labels
+
+### Added
+- regression coverage for artifact label extraction edge cases and ambiguous download-control artifact detection
+
 ## 0.2.1 - 2026-04-07
 
 ### Fixed
