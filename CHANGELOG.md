@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 - 2026-04-08
+
+### Changed
+- rewrote the GitHub-facing README to work better as a landing page, with a sharper value prop, clearer install guidance, a real quickstart, example requests, a minimal config example, troubleshooting, and a high-level flow diagram
+- README now explains when to use `pi-oracle`, when not to use it first, where outputs live, and what to do if a wake-up is missed
+
+### Fixed
+- removed the stale legacy model wording from the README example flow and aligned user-facing setup docs with the preset-based configuration model
+
 ## 0.3.0 - 2026-04-08
 
 ### Changed

@@ -1,87 +1,30 @@
 # pi-oracle
 
-`pi-oracle` is a `pi` extension that lets the agent use ChatGPT.com as a long-running web oracle instead of using the API.
+`pi-oracle` is a `pi` package that lets the agent hand off difficult, long-running tasks to ChatGPT.com through the web app instead of the API.
 
-It exists for the hard cases where you want:
-- the user’s real ChatGPT account
+Use it when you want:
+- your real ChatGPT account
 - web-model behavior instead of API usage
-- large project-context uploads
-- async background execution with durable job-state/response artifacts plus best-effort wake-ups for the originating `pi` session
-- oracle requires a persisted `pi` session identity; in-memory/no-session contexts are rejected instead of risking wrong-session wake-ups
-- legacy project-scoped jobs created before that change remain readable via project status/read commands, but skip best-effort wake-up routing after upgrade
+- large repo/context uploads
+- async background execution
+- durable saved responses/artifacts plus best-effort wake-ups back into `pi`
 
-Normal oracle jobs run in an isolated browser profile, not in the user’s active Chrome window.
+Normal oracle jobs run in an isolated browser profile, not your active Chrome window.
 
-Status: experimental public beta, validated primarily on macOS.
+> Status: experimental public beta. Validated primarily on macOS with Google Chrome and `pi` 0.65.0+.
 
-Compatibility target: current lifecycle/event model in `pi` 0.65.0+.
-This package intentionally uses the current `session_start`-based session lifecycle and does not ship backward-compatibility shims for removed extension events.
+## When to use it
 
-## What it does
+Use `pi-oracle` for:
+- big code reviews of a repo or pending changes
+- architectural or migration analysis that benefits from a large uploaded archive
+- long-running prompts that may take minutes to finish
+- follow-up questions in the same ChatGPT thread later
 
-The extension adds:
-- `/oracle <request>`
-  - implemented as a prompt template so it keeps native pi queueing behavior during streaming and compaction
-- `/oracle-auth`
-- `/oracle-status [job-id]`
-- `/oracle-cancel [job-id]`
-- `/oracle-clean <job-id|all>`
-- `oracle_submit`
-- `oracle_read`
-- `oracle_cancel`
-
-An oracle job:
-1. gathers a project archive
-2. if runtime capacity is full, persists as `queued` and starts automatically later
-3. otherwise opens ChatGPT in an isolated runtime profile
-4. uploads the archive and sends the prompt
-5. waits in the background
-6. persists the response and any artifacts under the oracle job directory (`${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default)
-   - old terminal jobs are later pruned according to cleanup retention settings
-   - when directory inputs are expanded, project archives automatically skip common bulky generated caches and top-level build outputs such as `node_modules/`, `target/`, virtualenv caches, coverage outputs, and `dist/`/`build/`/`out/`, unless you explicitly pass those directories
-   - whole-repo archive defaults also skip obvious credentials/private data such as `.env` files, key material, credential dotfiles, local database files, and root `secrets/` directories unless you explicitly pass them
-   - if a whole-repo archive is still too large after default exclusions, submit automatically prunes the largest nested directories with generic generated-output names like `build/`, `dist/`, `out/`, `coverage/`, and `tmp/` outside obvious source roots like `src/` and `lib/`, and successful submissions report what was pruned
-7. persists the response/artifacts durably in oracle job state and issues best-effort wake-ups to whichever matching `pi` session is currently live
-
-## Example
-
-```text
-/oracle Invoke the Oracle to have it generate a thorough code review of the current pending changes. By default include the whole repo archive unless the request clearly needs a narrower scope. Use the Pro Model with Extended effort.
-```
-
-## Why this exists
-
-The goal is to get strong ChatGPT web-model answers without:
-- paying API costs for every long review
-- blocking the agent for 10–90 minutes
-- stealing focus from the user’s active browser session
-
-## Current scope
-
-Currently validated for:
-- macOS
-- local Google Chrome
-- local ChatGPT web login in Chrome
-- isolated auth seed profile + per-job runtime profile clones
-- concurrent jobs across different projects/sessions
-- workerless queued jobs when the global concurrency limit is full
-- same-conversation exclusion for follow-ups
-- plain-text responses
-- artifact capture, including multi-artifact runs
-
-Not promised yet:
-- cross-platform support
-- immunity to future ChatGPT UI changes
-- fully polished partial-artifact terminal semantics
-
-## Requirements
-
-- macOS
-- Google Chrome installed
-- ChatGPT already signed into a local Chrome profile
-- `pi` 0.65.0 or newer installed
-- `agent-browser` available on the machine
-- `tar` and `zstd` available
+Do not reach for it first for:
+- normal short coding tasks that `pi` can handle directly
+- workflows that must never upload project archives to ChatGPT.com
+- environments outside the current supported setup
 
 ## Install
 
@@ -97,57 +40,152 @@ GitHub:
 pi install https://github.com/fitchmultz/pi-oracle
 ```
 
-## First-time setup
+## Quickstart
 
 1. Make sure ChatGPT already works in your local Chrome profile.
-2. Configure the oracle if needed via `~/.pi/agent/extensions/oracle.json`.
-3. Run `/oracle-auth`.
-4. Run a tiny `/oracle` smoke test.
+2. Make sure these are installed: Google Chrome, `agent-browser`, `tar`, and `zstd`.
+3. Optional: create `~/.pi/agent/extensions/oracle.json` if you want non-default settings.
+4. Run `/oracle-auth`.
+5. Run `/oracle Review the current pending changes. Include the whole repo unless a narrower archive is clearly better.`
+6. Wait for a best-effort wake-up, or check `/oracle-status`.
 
-## Configuration
+If you miss the wake-up, the result is still saved durably in the oracle job directory and can be read later.
 
-Config files:
-- global: `~/.pi/agent/extensions/oracle.json`
-- project: `.pi/extensions/oracle.json`
+## Example requests
 
-Common settings:
-- `defaults.preset`
+```text
+/oracle Review the current pending changes. Include the whole repo unless a narrower archive is clearly better. Give me a prioritized code review with concrete fixes.
+```
+
+```text
+/oracle Read the codebase and explain the highest-risk auth/session failure modes, including what to test before shipping.
+```
+
+## High-level flow
+
+```mermaid
+flowchart LR
+    A["/oracle request"] --> B["Agent gathers repo context"]
+    B --> C["oracle_submit builds archive"]
+    C --> D["Detached worker starts isolated ChatGPT runtime"]
+    D --> E["Archive + prompt sent to ChatGPT.com"]
+    E --> F["Response/artifacts saved under oracle job dir"]
+    F --> G["Best-effort wake-up to matching pi session"]
+```
+
+If concurrency is full, the job is queued and starts automatically later.
+
+## What the package adds
+
+User-facing commands:
+- `/oracle <request>` — prompt template that tells the agent to gather context and dispatch an oracle job
+- `/oracle-auth` — sync ChatGPT cookies from your real Chrome profile into the isolated oracle auth profile
+- `/oracle-status [job-id]` — inspect job status
+- `/oracle-cancel [job-id]` — cancel queued or active job
+- `/oracle-clean <job-id|all>` — remove temp files for terminal jobs
+
+Agent-facing tools:
+- `oracle_submit`
+- `oracle_read`
+- `oracle_cancel`
+
+## Minimal config
+
+Most users can start with the packaged defaults and only set the Chrome profile if needed.
+
+`~/.pi/agent/extensions/oracle.json`
+
+```json
+{
+  "defaults": {
+    "preset": "<preset id from ORACLE_SUBMIT_PRESETS>"
+  },
+  "auth": {
+    "chromeProfile": "Default"
+  }
+}
+```
+
+Notes:
+- `defaults.preset` is the default ChatGPT model preset for oracle jobs.
+- The canonical preset ids live in `extensions/oracle/lib/config.ts`.
+- If the packaged default is fine, you can omit `defaults.preset` entirely.
+- You usually do not need to set browser paths unless auto-detection fails.
+
+Other useful settings:
+- `browser.runMode`
 - `browser.args`
-- `browser.executablePath`
 - `browser.authSeedProfileDir`
 - `browser.runtimeProfilesDir`
-- `auth.chromeProfile`
-- `auth.chromeCookiePath`
 - `cleanup.completeJobRetentionMs`
 - `cleanup.failedJobRetentionMs`
 
 Project config should only override safe, non-privileged settings.
 
-Cleanup behavior:
-- terminal job directories under the configured oracle jobs dir (`${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default) are retained for inspection, then pruned conservatively
-- completed/cancelled jobs are pruned after `cleanup.completeJobRetentionMs` based on terminal-job age, but recent wake-up sends keep response/artifact files retained briefly so follow-up turns do not point at deleted paths
-- failed jobs are pruned after `cleanup.failedJobRetentionMs`
-- `/oracle-cancel` can cancel queued or active jobs
-- `/oracle-clean` refuses non-terminal jobs, including queued ones, refuses terminal jobs whose worker is still live, also refuses recently woken jobs during a short post-send retention grace window, performs runtime cleanup before removing terminal job directories, and reports cleanup warnings if any residual cleanup step fails
+## What happens to outputs
 
-Detailed design and maintainer docs:
-- `docs/ORACLE_DESIGN.md`
-- `docs/ORACLE_RECOVERY_DRILL.md`
+- Jobs persist their response and any artifacts under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default.
+- Jobs can queue automatically if runtime capacity is full.
+- Completion delivery into `pi` is best-effort wake-up based.
+- If you miss the wake-up, use `oracle_read(jobId)` or `/oracle-status`.
 
-Completion notification semantics:
-- oracle responses and artifacts are always persisted durably in oracle job state under the configured oracle jobs dir (`${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default)
-- completion delivery into pi sessions is best-effort wake-up based; the extension no longer appends synthetic assistant completion messages into session history
-- wake-up content tells the receiving assistant to call `oracle_read(jobId)` as the canonical completion-consumption path, with saved file paths included as secondary context
-- manual `oracle_read` or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened, and now persists settlement provenance for postmortems
-- manual inspection before the first wake-up attempt is recorded as observation only and does not suppress the first reminder send
-- if a wake-up does not land, the job remains available via its saved response/artifacts and status commands
+## Requirements
+
+- macOS
+- Google Chrome installed
+- ChatGPT already signed into a local Chrome profile
+- `pi` 0.65.0 or newer
+- `agent-browser` available on the machine
+- `tar` and `zstd` available
+
+## Troubleshooting
+
+### `/oracle-auth` fails or says login is required
+
+- Make sure ChatGPT works in the same local Chrome profile you configured.
+- Re-run `/oracle-auth`.
+- If ChatGPT is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
+
+### You hit a challenge / verification page
+
+- Solve it in the auth/bootstrap browser if prompted.
+- Then re-run `/oracle-auth` before submitting jobs again.
+
+### You see "Oracle requires a persisted pi session"
+
+- Do not run oracle from `pi --no-session`.
+- Start a normal persisted `pi` session, then use `/oracle` again.
+
+### A job finished but no wake-up arrived
+
+- Use `/oracle-status [job-id]` or `oracle_read(jobId)`.
+- Results are still saved on disk even if the reminder turn does not land.
+
+### `agent-browser`, `tar`, or `zstd` is missing
+
+- Install the missing local dependency and rerun the command.
+
+### Auto-detection picked the wrong Chrome profile
+
+- Set `auth.chromeProfile` in `~/.pi/agent/extensions/oracle.json`.
+- Re-run `/oracle-auth`.
+
+### You want more details about a failed run
+
+- Inspect the job directory under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`.
+- The worker log and captured diagnostics are stored there.
+
+## Detailed docs
+
+- `docs/ORACLE_DESIGN.md` — architecture, lifecycle, queueing, persistence, presets, and recovery behavior
+- `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
 
 ## Privacy / local data
 
 This extension is local-first, but it does read and persist local data:
 - `/oracle-auth` reads ChatGPT cookies from a local Chrome profile
 - job archives are uploaded to ChatGPT.com
-- responses and artifacts are written under the configured oracle jobs dir (`${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default)
+- responses and artifacts are written under the configured oracle jobs dir
 
 Review the code and design docs before using it with sensitive material.
 
