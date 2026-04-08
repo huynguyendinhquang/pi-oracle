@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 - 2026-04-08
+
+### Changed
+- README now lists the available oracle preset ids directly, so users can choose `defaults.preset` values without having to inspect source files
+
+### Fixed
+- closed a README usability gap where preset-based configuration was documented without actually enumerating the shipped preset ids
+- oracle sanity coverage now verifies that the README lists every preset from the canonical `ORACLE_SUBMIT_PRESETS` registry
+
 ## 0.3.1 - 2026-04-08
 
 ### Changed

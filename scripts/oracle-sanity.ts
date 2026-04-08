@@ -3030,6 +3030,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const designSource = await readFile(new URL("../docs/ORACLE_DESIGN.md", import.meta.url), "utf8");
+  const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     files?: string[];
     pi?: { prompts?: string[] };
@@ -3078,6 +3079,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS"), "oracle submit tool schema should reference the canonical preset registry");
   assert(toolsSource.includes("Use `preset` as the only model-selection parameter"), "oracle tool guidance should say preset is the only selector");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
+  assert(readmeSource.includes("## Available presets"), "README should document available oracle preset ids");
+  assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
+  for (const [presetId, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][]) {
+    assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
+    assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
+  }
   assert(JSON.stringify(presetIdsInSchema) === JSON.stringify(expectedPresetIds), "oracle submit preset schema should expose exactly the canonical preset ids");
   assert(!("modelFamily" in submitProperties), "oracle submit tool schema should not expose legacy modelFamily input");
   assert(!("effort" in submitProperties), "oracle submit tool schema should not expose legacy effort input");

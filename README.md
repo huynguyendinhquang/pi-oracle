@@ -112,6 +112,19 @@ Notes:
 - If the packaged default is fine, you can omit `defaults.preset` entirely.
 - You usually do not need to set browser paths unless auto-detection fails.
 
+## Available presets
+
+| Preset id | Description |
+| --- | --- |
+| `pro_standard` | Pro - Standard |
+| `pro_extended` | Pro - Extended |
+| `thinking_light` | Thinking - Light |
+| `thinking_standard` | Thinking - Standard |
+| `thinking_extended` | Thinking - Extended |
+| `thinking_heavy` | Thinking - Heavy |
+| `instant` | Instant |
+| `instant_auto_switch` | Instant - Auto-switch to Thinking Enabled |
+
 Other useful settings:
 - `browser.runMode`
 - `browser.args`
