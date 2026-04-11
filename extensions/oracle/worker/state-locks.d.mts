@@ -1,4 +1,5 @@
 export const ORACLE_METADATA_WRITE_GRACE_MS: number;
+export const ORACLE_TMP_STATE_DIR_GRACE_MS: number;
 
 export function acquireLock(
   stateDir: string,

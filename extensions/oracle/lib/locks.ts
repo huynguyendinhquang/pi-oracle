@@ -12,6 +12,8 @@ const LEASES_DIR = join(ORACLE_STATE_DIR, "leases");
 const DEFAULT_WAIT_MS = 30_000;
 const POLL_MS = 200;
 export const ORACLE_METADATA_WRITE_GRACE_MS = 1_000;
+/** Incomplete `.tmp-*` dirs are in-flight atomic creates; a 1s grace is too short under multi-process sweep + slow FS. */
+export const ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000;
 
 export interface OracleLockHandle {
   path: string;
@@ -90,7 +92,8 @@ function isIncompleteStateDirStale(path: string, now = Date.now()): boolean {
   try {
     const stats = statSync(path);
     const baselineMs = Math.max(stats.mtimeMs, stats.ctimeMs);
-    return now - baselineMs >= ORACLE_METADATA_WRITE_GRACE_MS;
+    const graceMs = basename(path).startsWith(".tmp-") ? ORACLE_TMP_STATE_DIR_GRACE_MS : ORACLE_METADATA_WRITE_GRACE_MS;
+    return now - baselineMs >= graceMs;
   } catch {
     return false;
   }
@@ -138,13 +141,13 @@ async function maybeReclaimStaleLock(path: string, now = Date.now()): Promise<bo
   return true;
 }
 
-export async function sweepStaleLocks(): Promise<string[]> {
+export async function sweepStaleLocks(now = Date.now()): Promise<string[]> {
   const dir = getLocksDir();
   const removed: string[] = [];
 
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
-    if (await maybeReclaimStaleLock(path)) {
+    if (await maybeReclaimStaleLock(path, now)) {
       removed.push(path);
     }
   }

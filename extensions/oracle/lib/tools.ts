@@ -1,3 +1,8 @@
+// Purpose: Register oracle extension tools and implement submit/read/cancel behavior.
+// Responsibilities: Validate tool parameters, create archives, enqueue or dispatch jobs, and surface job state.
+// Scope: Tool-facing orchestration only; durable job storage, locks, runtime leases, and config live in sibling modules.
+// Usage: Imported by the oracle extension entrypoint and sanity tests to register tools against the pi API.
+// Invariants/Assumptions: The pi runtime validates TypeBox schemas before execute, while execute owns semantic normalization.
 import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,10 +11,9 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
+  coerceOracleSubmitPresetId,
   loadOracleConfig,
-  ORACLE_SUBMIT_PRESETS,
   resolveOracleSubmitPreset,
-  type OracleSubmitPresetId,
 } from "./config.js";
 import {
   appendCleanupWarnings,
@@ -48,10 +52,6 @@ import {
   tryAcquireRuntimeLease,
 } from "./runtime.js";
 
-function stringEnum(values: readonly string[], description: string) {
-  return Type.Union(values.map((value) => Type.Literal(value)), { description });
-}
-
 const ORACLE_SUBMIT_PARAMS = Type.Object({
   prompt: Type.String({ description: "Prompt text to send to ChatGPT web." }),
   files: Type.Array(Type.String({ description: "Project-relative file or directory path to include in the archive." }), {
@@ -59,10 +59,10 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
     minItems: 1,
   }),
   preset: Type.Optional(
-    stringEnum(
-      [...Object.keys(ORACLE_SUBMIT_PRESETS)] as const,
-      "ChatGPT model preset. Omit to use the configured default preset.",
-    ),
+    Type.String({
+      description:
+        "ChatGPT model preset. Omit to use the configured default preset. Canonical ids are preferred; matching human-readable preset labels and common hyphen/space variants are normalized automatically.",
+    }),
   ),
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose chat thread should be continued." })),
 });
@@ -579,7 +579,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     label: "Oracle Submit",
     description:
       "Dispatch a background ChatGPT web oracle job after gathering context. Always pass a prompt and exact project-relative archive inputs. " +
-      "Optional ChatGPT model: set parameter `preset`, or omit it for configured defaults (see `preset` field for allowed ids).",
+      "Optional ChatGPT model: set parameter `preset`, or omit it for configured defaults; canonical preset ids are listed in the README and ORACLE_SUBMIT_PRESETS registry, and matching labels are normalized at submit time.",
     promptSnippet: "Dispatch a background ChatGPT web oracle job after gathering repo context.",
     promptGuidelines: [
       "Gather context before calling oracle_submit.",
@@ -591,7 +591,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       "If oracle_submit itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error instead of retrying automatically.",
       "If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success and stop exactly the same way.",
       "Stop after dispatching oracle_submit; do not continue the task while the oracle job is running.",
-      "Use `preset` as the only model-selection parameter on oracle_submit. Allowed values come from the tool schema enum. Omit preset to use the configured default.",
+      "Use `preset` as the only model-selection parameter on oracle_submit. Canonical ids are preferred, and matching human-readable preset labels are normalized automatically. Omit preset to use the configured default.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -599,7 +599,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
       const projectId = getProjectId(ctx.cwd);
       const sessionId = getSessionId(originSessionFile, projectId);
-      const presetId = (params.preset as OracleSubmitPresetId | undefined) ?? config.defaults.preset;
+      const presetId = typeof params.preset === "string" ? coerceOracleSubmitPresetId(params.preset) : config.defaults.preset;
       const selection = resolveOracleSubmitPreset(presetId);
       const followUp = resolveFollowUp(params.followUpJobId, ctx.cwd);
       try {

@@ -1,11 +1,18 @@
+// Purpose: Run local regression checks for the pi oracle extension.
+// Responsibilities: Exercise config, locking, queueing, worker, tool schema, and documentation contracts without remote CI.
+// Scope: Sanity-test orchestration only; production behavior remains in extensions/oracle and prompts/docs.
+// Usage: Invoked by npm run sanity:oracle through scripts/oracle-sanity-runner.mjs.
+// Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
+import { Check } from "@sinclair/typebox/value";
 import {
+  coerceOracleSubmitPresetId,
   DEFAULT_CONFIG,
   ORACLE_SUBMIT_PRESETS,
   resolveOracleSubmitPreset,
@@ -45,6 +52,7 @@ import {
   getOracleStateDir,
   listLeaseMetadata,
   ORACLE_METADATA_WRITE_GRACE_MS,
+  ORACLE_TMP_STATE_DIR_GRACE_MS,
   readLeaseMetadata,
   releaseLease,
   releaseLock,
@@ -94,17 +102,26 @@ function findPresetId(
   return match[0];
 }
 
-function getLiteralEnumValues(schema: unknown): string[] {
-  const anyOf = asRecord(schema)?.anyOf;
-  if (!Array.isArray(anyOf)) return [];
-  return anyOf
-    .map((option) => asRecord(option)?.const)
-    .filter((value): value is string => typeof value === "string");
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+const IN_FLIGHT_LOCK_PUBLISHER_SCRIPT = [
+  'import { createHash } from "node:crypto";',
+  'import { mkdir, rename, writeFile } from "node:fs/promises";',
+  'import { join } from "node:path";',
+  'const [stateDir, kind, key] = process.argv.slice(1);',
+  'const finalName = `${kind}-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;',
+  'const parentDir = join(stateDir, "locks");',
+  'const tempPath = join(parentDir, `.tmp-${finalName}.${process.pid}.${Date.now()}.child`);',
+  'const finalPath = join(parentDir, finalName);',
+  'await mkdir(parentDir, { recursive: true, mode: 0o700 });',
+  'await mkdir(tempPath, { recursive: false, mode: 0o700 });',
+  'process.stdin.resume();',
+  'await new Promise((resolve) => process.stdin.once("data", () => resolve(undefined)));',
+  'await writeFile(join(tempPath, "metadata.json"), `${JSON.stringify({ processPid: process.pid, source: "oracle-sanity-inflight-publisher" }, null, 2)}\\n`, { encoding: "utf8", mode: 0o600 });',
+  'await rename(tempPath, finalPath);',
+].join("\n");
 
 function readProcessStartedAt(pid: number | undefined): string | undefined {
   if (!pid || pid <= 0) return undefined;
@@ -142,6 +159,17 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function waitForTmpStateDir(parentDir: string, finalName: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entries = await readdir(parentDir).catch(() => [] as string[]);
+    const match = entries.find((name) => name.startsWith(`.tmp-${finalName}.`));
+    if (match) return join(parentDir, match);
+    await sleep(25);
+  }
+  throw new Error(`Timed out waiting for in-flight .tmp-* dir for ${finalName}`);
 }
 
 function hashedOracleStatePath(kind: string, key: string, rootDir: string): string {
@@ -588,6 +616,18 @@ async function testOracleSubmitPresetGuardrails(): Promise<void> {
     const resolved = resolveOracleSubmitPreset(id);
     assert(resolved.preset === id, `preset ${id} should carry its id in the resolved selection`);
     assert(resolved.modelFamily === preset.modelFamily, `preset ${id} should map to modelFamily ${preset.modelFamily}`);
+    assert(coerceOracleSubmitPresetId(id) === id, `canonical preset id ${id} should resolve to itself`);
+    assert(coerceOracleSubmitPresetId(id.replace(/_/g, "-")) === id, `hyphenated preset id for ${id} should normalize correctly`);
+    assert(coerceOracleSubmitPresetId(id.replace(/_/g, " ")) === id, `space-normalized preset id for ${id} should normalize correctly`);
+    assert(coerceOracleSubmitPresetId(preset.label) === id, `preset label ${preset.label} should normalize to ${id}`);
+    assert(
+      coerceOracleSubmitPresetId(preset.label.toLowerCase()) === id,
+      `lowercase preset label ${preset.label.toLowerCase()} should normalize to ${id}`,
+    );
+    assert(
+      coerceOracleSubmitPresetId(preset.label.replace(/[^A-Za-z0-9]+/g, " ").trim().replace(/\s+/g, " ")) === id,
+      `space-normalized preset label for ${id} should normalize correctly`,
+    );
     if (preset.modelFamily === "instant") {
       assert(resolved.effort === undefined, `preset ${id} should not set effort`);
       assert(
@@ -599,9 +639,25 @@ async function testOracleSubmitPresetGuardrails(): Promise<void> {
       assert(resolved.autoSwitchToThinking === false, `preset ${id} should not enable auto-switch`);
     }
   }
+
+  const instantAutoSwitchPreset = findPresetId(
+    (preset) => preset.modelFamily === "instant" && preset.autoSwitchToThinking,
+    "expected an instant auto-switch oracle submit preset",
+  );
+  const mixedHyphenSpaceLabel = "Instant Auto-switch to Thinking Enabled";
+  assert(
+    coerceOracleSubmitPresetId(mixedHyphenSpaceLabel) === instantAutoSwitchPreset,
+    `mixed hyphen/space preset label variant ${mixedHyphenSpaceLabel} should normalize to ${instantAutoSwitchPreset}`,
+  );
+
   assertThrows(
     () => resolveOracleSubmitPreset("__not_a_real_preset__" as OracleSubmitPresetId),
     "unknown oracle_submit preset ids should be rejected",
+    "Unknown oracle_submit preset",
+  );
+  assertThrows(
+    () => coerceOracleSubmitPresetId("__not_a_real_preset__"),
+    "unknown oracle_submit preset aliases should be rejected",
     "Unknown oracle_submit preset",
   );
 }
@@ -615,7 +671,7 @@ async function testCleanupPendingRecoveryTerminatesStaleLiveWorker(config: Oracl
   assert(job, "cleanup-pending live-worker recovery job should exist");
   const conversationId = `conversation-${randomUUID()}`;
 
-  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"] , {
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
     detached: true,
     stdio: "ignore",
   });
@@ -688,7 +744,7 @@ async function testOracleCleanRefusesTerminalJobsWithLiveWorkers(config: OracleC
     registerCommand(name: string, definition: any) {
       this.commands.set(name, definition);
     },
-    sendMessage: () => {},
+    sendMessage: () => { },
   };
   registerOracleCommands(pi, fakeWorkerPath, fakeWorkerPath);
 
@@ -701,7 +757,7 @@ async function testOracleCleanRefusesTerminalJobsWithLiveWorkers(config: OracleC
   assert(job, "oracle clean live-worker job should exist");
   const conversationId = `conversation-${randomUUID()}`;
 
-  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"] , {
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
     detached: true,
     stdio: "ignore",
   });
@@ -998,7 +1054,7 @@ async function testCancelCleanupWarningsDoNotPromoteQueuedJobs(config: OracleCon
     registerCommand(name: string, definition: any) {
       this.commands.set(name, definition);
     },
-    sendMessage: () => {},
+    sendMessage: () => { },
   };
   registerOracleTools(pi, fakeWorkerPath);
   registerOracleCommands(pi, fakeWorkerPath, fakeWorkerPath);
@@ -1027,7 +1083,7 @@ async function testCancelCleanupWarningsDoNotPromoteQueuedJobs(config: OracleCon
 
     try {
       if (kind === "tool") {
-        await cancelTool.execute("oracle-cancel-cleanup-test", { jobId: cancellingId }, undefined, () => {}, ctx);
+        await cancelTool.execute("oracle-cancel-cleanup-test", { jobId: cancellingId }, undefined, () => { }, ctx);
       } else {
         await cancelCommand.handler(cancellingId, ctx);
       }
@@ -1154,7 +1210,7 @@ async function testCancelFailureDoesNotPromoteQueuedJobs(config: OracleConfig): 
     registerCommand(name: string, definition: any) {
       this.commands.set(name, definition);
     },
-    sendMessage: () => {},
+    sendMessage: () => { },
   };
   registerOracleTools(pi, fakeWorkerPath);
   registerOracleCommands(pi, fakeWorkerPath, fakeWorkerPath);
@@ -1179,7 +1235,7 @@ async function testCancelFailureDoesNotPromoteQueuedJobs(config: OracleConfig): 
       createdAt: new Date().toISOString(),
     });
 
-    const stuckWorker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"] , {
+    const stuckWorker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
       detached: true,
       stdio: "ignore",
     });
@@ -1204,7 +1260,7 @@ async function testCancelFailureDoesNotPromoteQueuedJobs(config: OracleConfig): 
 
     try {
       if (kind === "tool") {
-        await cancelTool.execute("oracle-cancel-test", { jobId: activeId }, undefined, () => {}, ctx);
+        await cancelTool.execute("oracle-cancel-test", { jobId: activeId }, undefined, () => { }, ctx);
       } else {
         await cancelCommand.handler(activeId, ctx);
       }
@@ -1536,8 +1592,8 @@ async function testOracleSubmitRejectsMissingSessionIdentity(): Promise<void> {
     registerTool(definition: any) {
       this.tools.set(definition.name, definition);
     },
-    registerCommand: () => {},
-    sendMessage: () => {},
+    registerCommand: () => { },
+    sendMessage: () => { },
   };
   registerOracleTools(pi, fakeWorkerPath);
   const submitTool = pi.tools.get("oracle_submit");
@@ -1545,7 +1601,7 @@ async function testOracleSubmitRejectsMissingSessionIdentity(): Promise<void> {
 
   let rejected = false;
   try {
-    await submitTool.execute("oracle-submit-missing-session", { prompt: "test", files: ["README.md"] }, undefined, () => {}, {
+    await submitTool.execute("oracle-submit-missing-session", { prompt: "test", files: ["README.md"] }, undefined, () => { }, {
       cwd: process.cwd(),
       sessionManager: { getSessionFile: () => undefined },
       hasUI: true,
@@ -1570,8 +1626,8 @@ async function testOracleReadUsesConfiguredJobsDir(config: OracleConfig): Promis
     registerTool(definition: any) {
       this.tools.set(definition.name, definition);
     },
-    registerCommand: () => {},
-    sendMessage: () => {},
+    registerCommand: () => { },
+    sendMessage: () => { },
   };
   registerOracleTools(pi, fakeWorkerPath);
   const readTool = pi.tools.get("oracle_read");
@@ -1585,7 +1641,7 @@ async function testOracleReadUsesConfiguredJobsDir(config: OracleConfig): Promis
   assert(!expectedArtifactsPath.startsWith(`/tmp/oracle-${jobId}/artifacts`), "sanity runner should use a non-default jobs dir for oracle read path coverage");
 
   try {
-    const result = await readTool.execute("oracle-read-path-test", { jobId }, undefined, () => {}, {
+    const result = await readTool.execute("oracle-read-path-test", { jobId }, undefined, () => { }, {
       cwd: process.cwd(),
       sessionManager,
       hasUI: true,
@@ -1615,7 +1671,7 @@ async function testManualReadsSettleWakeupRetries(config: OracleConfig): Promise
     registerCommand(name: string, definition: any) {
       this.commands.set(name, definition);
     },
-    sendMessage: () => {},
+    sendMessage: () => { },
   };
   registerOracleTools(pi, fakeWorkerPath);
   registerOracleCommands(pi, fakeWorkerPath, fakeWorkerPath);
@@ -1666,7 +1722,7 @@ async function testManualReadsSettleWakeupRetries(config: OracleConfig): Promise
   const readJobId = await createTerminalJob(config, process.cwd(), sessionFile);
   try {
     await setRetryEligible(readJobId);
-    await readTool.execute("oracle-read-settles-wakeup", { jobId: readJobId }, undefined, () => {}, ctx);
+    await readTool.execute("oracle-read-settles-wakeup", { jobId: readJobId }, undefined, () => { }, ctx);
     const readSettled = readJob(readJobId);
     assert(Boolean(readSettled?.wakeupSettledAt), "oracle read should mark terminal jobs settled after a manual read");
     assert(readSettled?.wakeupSettledSource === "oracle_read", "oracle read settlement should persist provenance for the settling path");
@@ -1709,7 +1765,7 @@ async function testPreSendStatusObservationDoesNotSuppressFirstWakeup(config: Or
     registerCommand(name: string, definition: any) {
       this.commands.set(name, definition);
     },
-    sendMessage: () => {},
+    sendMessage: () => { },
   };
   registerOracleTools(pi, fakeWorkerPath);
   registerOracleCommands(pi, fakeWorkerPath, fakeWorkerPath);
@@ -2082,7 +2138,7 @@ async function testPollerDoesNotStealNotificationFromLiveSessionTarget(config: O
   const job = readJob(jobId);
   assert(job, "live-target notification job should exist");
 
-  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"] , {
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
     detached: true,
     stdio: "ignore",
   });
@@ -2181,7 +2237,7 @@ async function testWakeupTargetLeaseRenewalStaysVisibleToAdopters(config: Oracle
   const job = readJob(jobId);
   assert(job, "live-renew notification job should exist");
 
-  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"] , {
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
     detached: true,
     stdio: "ignore",
   });
@@ -2284,7 +2340,7 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveAfterClaim
     ui: createUiStub(),
   };
 
-  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"] , {
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
     detached: true,
     stdio: "ignore",
   });
@@ -2377,7 +2433,7 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveBeforePers
     ui: createUiStub(),
   };
 
-  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"] , {
+  const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
     detached: true,
     stdio: "ignore",
   });
@@ -2838,6 +2894,71 @@ async function testDeadPidLockSweep(): Promise<void> {
   assert(removed.length === 1, `expected exactly one stale lock to be removed, saw ${removed.length}`);
 }
 
+async function testTmpLockDirGraceHonorsConfiguredWindow(): Promise<void> {
+  await rm(getOracleStateDir(), { recursive: true, force: true });
+  const parentDir = getLocksDir();
+  const key = `tmp-lock-grace-window-${randomUUID()}`;
+  const finalName = basename(hashedOracleStatePath("job", key, parentDir));
+  const tempPath = join(parentDir, `.tmp-${finalName}.${process.pid}.window`);
+  await mkdir(tempPath, { recursive: false, mode: 0o700 });
+
+  const stats = await stat(tempPath);
+  const baselineMs = Math.max(stats.mtimeMs, stats.ctimeMs);
+  const deltaMs = Math.max(1, Math.floor(ORACLE_TMP_STATE_DIR_GRACE_MS / 10));
+
+  const removedBeforeGrace = await sweepStaleLocks(baselineMs + ORACLE_TMP_STATE_DIR_GRACE_MS - deltaMs);
+  assert(!removedBeforeGrace.includes(tempPath), "sweep should not reclaim .tmp-* lock dirs before ORACLE_TMP_STATE_DIR_GRACE_MS elapses");
+  assert(await pathExists(tempPath), ".tmp-* lock dirs should remain until the configured tmp grace window expires");
+
+  const removedAfterGrace = await sweepStaleLocks(baselineMs + ORACLE_TMP_STATE_DIR_GRACE_MS + deltaMs);
+  assert(removedAfterGrace.includes(tempPath), "sweep should reclaim .tmp-* lock dirs once ORACLE_TMP_STATE_DIR_GRACE_MS has elapsed");
+  assert(!(await pathExists(tempPath)), "expired .tmp-* lock dirs should be removed after the tmp grace window");
+}
+
+async function testTmpLockDirGracePreventsInFlightPublishReclaim(): Promise<void> {
+  await rm(getOracleStateDir(), { recursive: true, force: true });
+  const stateDir = getOracleStateDir();
+  const kind = "job";
+  const key = `tmp-lock-grace-${randomUUID()}`;
+  const finalPath = hashedOracleStatePath(kind, key, getLocksDir());
+  const finalName = basename(finalPath);
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", IN_FLIGHT_LOCK_PUBLISHER_SCRIPT, stateDir, kind, key], {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  let exited = false;
+  const childExit = new Promise<number>((resolve) => {
+    child.on("exit", (code) => {
+      exited = true;
+      resolve(code ?? 1);
+    });
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+
+  try {
+    const tempPath = await waitForTmpStateDir(getLocksDir(), finalName, 5_000);
+    await sleep(ORACLE_METADATA_WRITE_GRACE_MS + 200);
+
+    const removed = await sweepStaleLocks();
+    assert(!removed.includes(tempPath), "sweep should not reclaim fresh in-flight .tmp-* lock dirs within the tmp grace window");
+    assert(await pathExists(tempPath), "fresh in-flight .tmp-* lock dirs should still exist after a sweep");
+
+    child.stdin?.write("continue\n");
+    child.stdin?.end();
+
+    const exitCode = await childExit;
+    assert(exitCode === 0, `in-flight lock publisher should finish successfully after sweep, got exit ${exitCode}${stderr ? `: ${stderr}` : ""}`);
+
+    const metadata = JSON.parse(await readFile(join(finalPath, "metadata.json"), "utf8")) as { source?: string };
+    assert(metadata.source === "oracle-sanity-inflight-publisher", "in-flight publish should finish by atomically promoting the temp lock dir");
+  } finally {
+    if (!exited) child.kill("SIGKILL");
+    await rm(finalPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 async function testMetadataLessLockRecovery(): Promise<void> {
   await rm(getOracleStateDir(), { recursive: true, force: true });
   const key = `metadata-less-lock-${randomUUID()}`;
@@ -3040,23 +3161,28 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     registerTool(definition: any) {
       this.tools.set(definition.name, definition);
     },
-    registerCommand: () => {},
-    sendMessage: () => {},
+    registerCommand: () => { },
+    sendMessage: () => { },
   };
   registerOracleTools(pi, "/tmp/fake-oracle-worker.mjs");
   const submitTool = pi.tools.get("oracle_submit");
   assert(submitTool, "oracle submit tool should register for schema inspection");
   const submitProperties = asRecord(asRecord(submitTool.parameters)?.properties);
   assert(submitProperties, "oracle submit tool should expose an object schema");
-  const expectedPresetIds = Object.keys(ORACLE_SUBMIT_PRESETS).sort();
-  const presetIdsInSchema = getLiteralEnumValues(submitProperties.preset).sort();
+  const representativePresetAliases: [string, OracleSubmitPresetId][] = [
+    ["Pro-standard", "pro_standard"],
+    ["Pro-extended", "pro_extended"],
+    ["Thinking-standard", "thinking_standard"],
+    ["Instant Auto-switch to Thinking Enabled", "instant_auto_switch"],
+  ];
 
   assert(!commandsSource.includes('registerCommand("oracle"'), "/oracle should not be registered as an extension command");
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle prompt template should contain the oracle dispatch instructions");
   assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
   assert(promptSource.includes("is the only model-selection parameter"), "/oracle prompt should state preset is the only selector");
-  assert(promptSource.includes("tool schema enum / canonical preset registry"), "/oracle prompt should point callers to the schema/registry instead of a hard-coded preset list");
+  assert(promptSource.includes("canonical preset registry"), "/oracle prompt should point callers to the canonical registry instead of a hard-coded preset list");
   assert(promptSource.includes("Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`"), "/oracle prompt should tell callers not to pass legacy fields");
+  assert(promptSource.includes("Matching human-readable preset labels"), "/oracle prompt should explain preset label normalization");
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!promptSource.includes(presetId), `/oracle prompt should not hard-code preset id ${presetId}`);
   }
@@ -3071,21 +3197,40 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
   assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
   assert(designSource.includes("`preset` is the only model-selection parameter"), "design doc should state preset is the only selector");
+  assert(designSource.includes("matching human-readable labels/common hyphen-space variants"), "design doc should mention preset label normalization");
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
   assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
   assert(toolsSource.includes("resolveOracleSubmitPreset"), "oracle submit should resolve preset via config helper");
-  assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS"), "oracle submit tool schema should reference the canonical preset registry");
+  assert(toolsSource.includes("coerceOracleSubmitPresetId"), "oracle submit should normalize preset label aliases before resolving the canonical preset id");
+  assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS registry"), "oracle submit tool description should point preset discovery to the canonical registry");
+  assert(!toolsSource.includes("see `preset` field for canonical ids"), "oracle submit tool description should not imply the free-form preset schema exposes canonical ids");
   assert(toolsSource.includes("Use `preset` as the only model-selection parameter"), "oracle tool guidance should say preset is the only selector");
+  assert(toolsSource.includes("matching human-readable preset labels are normalized automatically"), "oracle tool guidance should mention preset label normalization");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
   assert(readmeSource.includes("## Available presets"), "README should document available oracle preset ids");
   assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
+  assert(readmeSource.includes("human-readable preset label"), "README should mention preset label normalization");
   for (const [presetId, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][]) {
     assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
     assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
   }
-  assert(JSON.stringify(presetIdsInSchema) === JSON.stringify(expectedPresetIds), "oracle submit preset schema should expose exactly the canonical preset ids");
+  assert(asRecord(submitProperties.preset)?.type === "string", "oracle submit preset schema should validate preset as a string before execute-time normalization");
+  for (const [presetAlias, presetId] of representativePresetAliases) {
+    assert(
+      Check(submitTool.parameters, { prompt: "sanity", files: ["README.md"], preset: presetAlias }),
+      `oracle_submit tool-call validation should accept preset alias ${presetAlias}`,
+    );
+    assert(
+      coerceOracleSubmitPresetId(presetAlias) === presetId,
+      `oracle_submit execute-time preset normalization should coerce ${presetAlias} to ${presetId}`,
+    );
+  }
+  assert(
+    !Check(submitTool.parameters, { prompt: "sanity", files: ["README.md"], preset: 123 }),
+    "oracle_submit tool-call validation should reject non-string preset values",
+  );
   assert(!("modelFamily" in submitProperties), "oracle submit tool schema should not expose legacy modelFamily input");
   assert(!("effort" in submitProperties), "oracle submit tool schema should not expose legacy effort input");
   assert(!("autoSwitchToThinking" in submitProperties), "oracle submit tool schema should not expose legacy autoSwitchToThinking input");
@@ -3108,6 +3253,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!jobsSource.includes('if (job.status === "waiting") return true;'), "worker phase alone should not count as a durable handoff without a persisted pid");
   assert(queueSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt)"), "queued promotion should terminate a spawned worker if persisting worker metadata fails");
   assert(locksSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "locks/leases should use a bounded grace window before reclaiming metadata-less state dirs left behind by crashes");
+  assert(locksSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "locks/leases should use a longer grace for in-flight .tmp-* dirs so concurrent sweep cannot delete another process's atomic publish");
+  assert(!locksSource.includes("127.0.0.1:7328"), "shipped lock helpers should not contain hidden localhost telemetry endpoints");
+  assert(!locksSource.includes("PI_ORACLE_DEBUG_LOCK_PAUSE_AFTER_MKDIR_MS"), "shipped lock helpers should not contain test-only post-mkdir sleep hooks");
   assert(locksSource.includes("createStateDirAtomically"), "locks/leases should publish new state dirs atomically so first creation never exposes a final dir without metadata");
   assert(locksSource.includes(".tmp-"), "lock/lease first-publish temp dirs should use a hidden prefix that lease readers never mistake for final published state dirs");
   assert(locksSource.includes("await rename(tempPath, finalPath);"), "locks/leases should atomically rename fully populated temp dirs into place for first publish");
@@ -3202,6 +3350,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
   assert(authBootstrapSource.includes("from \"./state-locks.mjs\""), "auth bootstrap should use the shared hardened state-lock helper instead of keeping divergent auth-lock crash recovery logic inline");
   assert(stateLocksSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "shared worker state-lock helper should use a bounded grace before reclaiming metadata-less state dirs");
+  assert(stateLocksSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "shared worker state-lock helper should use a longer grace for in-flight .tmp-* dirs under concurrent sweep");
   assert(stateLocksSource.includes("createStateDirAtomically"), "shared worker state-lock helper should publish new state dirs atomically so first creation never exposes a final dir without metadata");
   assert(stateLocksSource.includes(".tmp-"), "shared worker state-lock helper should use hidden temp dir prefixes so fresh publishes are never mistaken for final lease/lock dirs");
   assert(stateLocksSource.includes("maybeReclaimIncompleteStateDir"), "shared worker state-lock helper should reclaim metadata-less state dirs left behind by crashes");
@@ -3565,11 +3714,11 @@ function testArtifactCandidateHeuristics(): void {
 
 async function testPollerHostSafety(): Promise<void> {
   const sessionFile = "/tmp/oracle-sanity-session-host-safety.jsonl";
-  const pi: any = { sendMessage: () => {} };
+  const pi: any = { sendMessage: () => { } };
   const ctx: any = {
     cwd: process.cwd(),
     sessionManager: { getSessionFile: () => sessionFile },
-    ui: { setStatus: () => {}, theme: { fg: (_name: string, text: string) => text } },
+    ui: { setStatus: () => { }, theme: { fg: (_name: string, text: string) => text } },
   };
 
   let unhandled = 0;
@@ -3652,6 +3801,8 @@ async function main() {
   await testPollerWakeupRetriesStayBoundedWithoutDurableNotifications(config);
   await testStaleLockRecovery();
   await testDeadPidLockSweep();
+  await testTmpLockDirGraceHonorsConfiguredWindow();
+  await testTmpLockDirGracePreventsInFlightPublishReclaim();
   await testMetadataLessLockRecovery();
   await testMetadataLessConversationLeaseRecovery();
   await testWorkerAuthLockRecoversMetadataLessDir();

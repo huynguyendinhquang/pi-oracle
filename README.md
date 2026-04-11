@@ -125,6 +125,8 @@ Notes:
 | `instant` | Instant |
 | `instant_auto_switch` | Instant - Auto-switch to Thinking Enabled |
 
+`oracle_submit` accepts either the canonical preset id or the matching human-readable preset label; common space/hyphen variants are normalized automatically at submit time. Keep `defaults.preset` in config on the canonical preset id.
+
 Other useful settings:
 - `browser.runMode`
 - `browser.args`

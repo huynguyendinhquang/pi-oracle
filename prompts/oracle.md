@@ -14,7 +14,8 @@ Required workflow:
 6. Stop immediately after dispatching the oracle job.
 
 Oracle model (`oracle_submit`):
-- To choose a specific ChatGPT model, pass **`preset`** with one of the allowed ids from the tool schema enum / canonical preset registry.
+- To choose a specific ChatGPT model, pass **`preset`** with one of the allowed ids from the canonical preset registry.
+- Matching human-readable preset labels and common hyphen/space variants are also accepted and normalized automatically, but prefer canonical ids when readily available.
 - **Or** omit **`preset`** entirely to use the configured default model (from oracle config).
 - **`preset`** is the only model-selection parameter on `oracle_submit`. Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`.
 - If unsure which preset fits the task, ask the user.
@@ -27,7 +28,7 @@ Rules:
 - If the request depends on git state or pending changes (for example code review, ship readiness, or release approval), create a tracked diff bundle file inside the repo (for example under `.pi/`) containing `git status` plus `git diff` output, include that file in the archive, and tell the oracle to use it because the `.git` directory is not included in oracle exports.
 - When `files=["."]` and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like `build/`, `dist/`, `out/`, `coverage/`, and `tmp/` outside obvious source roots like `src/` and `lib/` until the archive fits or no candidate remains. Successful submissions report what was pruned.
 - If a submitted oracle job later fails because upload is rejected, retry with a smaller archive in this order: (1) remove the largest obviously irrelevant/generated content, (2) if still too large, include modified files plus adjacent files plus directly relevant subtrees, (3) if still too large, explain the cut or ask the user.
-- Prefer the configured default (omit **`preset`**) unless the task clearly needs a different model; then choose a **`preset`** id from the tool schema enum.
+- Prefer the configured default (omit **`preset`**) unless the task clearly needs a different model; then choose a canonical **`preset`** id.
 - If `oracle_submit` itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error. Do not retry automatically.
 - If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success and end your turn exactly the same way.
 - After oracle_submit returns, end your turn. Do not keep working while the oracle runs.

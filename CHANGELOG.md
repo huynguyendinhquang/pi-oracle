@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.3 - 2026-04-11
+
+### Added
+- `oracle_submit` now accepts canonical preset ids plus matching human-readable preset labels/common hyphen-space variants and normalizes them back to the canonical preset id at submit time
+- lock sweeping now gives in-flight `.tmp-*` lock/state directories a dedicated grace window so concurrent sweep does not delete another process's atomic publish
+
+### Changed
+- oracle submit metadata/docs now point preset discovery at the canonical registry/README while keeping execute-time normalization for flexible caller input
+
+### Fixed
+- closed a concurrent stale-lock sweep race that could reclaim another process's in-flight lock publish before metadata landed
+- oracle sanity coverage now verifies preset alias validation/normalization and the `.tmp-*` grace window behavior end-to-end
+
 ## 0.3.2 - 2026-04-08
 
 ### Changed

@@ -6,6 +6,7 @@ import { basename, join } from "node:path";
 const DEFAULT_WAIT_MS = 30_000;
 const POLL_MS = 200;
 export const ORACLE_METADATA_WRITE_GRACE_MS = 1_000;
+export const ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000;
 
 async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -76,7 +77,8 @@ function isIncompleteStateDirStale(path, now = Date.now()) {
   try {
     const stats = statSync(path);
     const baselineMs = Math.max(stats.mtimeMs, stats.ctimeMs);
-    return now - baselineMs >= ORACLE_METADATA_WRITE_GRACE_MS;
+    const graceMs = basename(path).startsWith(".tmp-") ? ORACLE_TMP_STATE_DIR_GRACE_MS : ORACLE_METADATA_WRITE_GRACE_MS;
+    return now - baselineMs >= graceMs;
   } catch {
     return false;
   }
