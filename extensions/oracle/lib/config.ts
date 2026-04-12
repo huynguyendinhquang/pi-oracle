@@ -1,3 +1,8 @@
+// Purpose: Define oracle configuration schema, defaults, preset selection, and local config loading behavior.
+// Responsibilities: Normalize preset ids, load extension config from disk, expose default browser/auth/runtime settings, and validate config shape.
+// Scope: Configuration and preset resolution only; runtime/job execution stays in sibling oracle modules.
+// Usage: Imported by oracle tools, commands, runtime helpers, and sanity tests when config or preset resolution is required.
+// Invariants/Assumptions: Preset ids remain the canonical model-selection contract and config loading must fail clearly on invalid user overrides.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";

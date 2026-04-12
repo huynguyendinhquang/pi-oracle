@@ -1,3 +1,8 @@
+// Purpose: Parse agent-browser snapshots and infer likely downloadable artifact labels from response UI structure.
+// Responsibilities: Extract snapshot entries, detect candidate filenames, and partition strong versus suspicious artifact signals.
+// Scope: Pure heuristic parsing only; browser interaction and artifact download orchestration stay in the worker.
+// Usage: Imported by worker runtime code, UI helper modules, and sanity tests to keep artifact detection behavior deterministic.
+// Invariants/Assumptions: Snapshot text comes from agent-browser `snapshot -i`, and heuristics should prefer false negatives over noisy false positives.
 export const FILE_LABEL_PATTERN_SOURCE = String.raw`(?:^|[^A-Za-z0-9._~/-])((?:(?:[A-Za-z]:)?[\\/]|[.~][\\/])?(?:[^\\/\s"'<>|]+[\\/])*[^\\/\s"'<>|]+\.[A-Za-z0-9]{1,12})(?=$|[^A-Za-z0-9._~/-])`;
 const FILE_LABEL_PATTERN = new RegExp(FILE_LABEL_PATTERN_SOURCE, "g");
 export const GENERIC_ARTIFACT_LABELS = ["ATTACHED", "DONE"];

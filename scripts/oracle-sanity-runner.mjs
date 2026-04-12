@@ -1,3 +1,8 @@
+// Purpose: Run the oracle sanity suite in an isolated temporary oracle state/jobs sandbox.
+// Responsibilities: Spawn the TypeScript sanity entrypoint with unique temp directories and clean them up after exit.
+// Scope: Test runner wrapper only; actual sanity coverage lives in scripts/oracle-sanity.ts and extracted sanity suites.
+// Usage: Invoked by npm run sanity:oracle as the stable local entrypoint for the oracle regression harness.
+// Invariants/Assumptions: Each run gets fresh temp state/jobs directories, and cleanup should happen on both normal exit and runner errors.
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";

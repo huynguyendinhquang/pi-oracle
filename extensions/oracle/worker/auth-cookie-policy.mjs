@@ -1,3 +1,8 @@
+// Purpose: Define the allowlist/drop policy for importing ChatGPT/OpenAI auth cookies into the isolated oracle browser profile.
+// Responsibilities: Recognize required auth cookies, drop noisy/irrelevant cookies, and normalize cookie import decisions.
+// Scope: Pure cookie-policy logic only; reading cookies from Chrome and writing them into the isolated profile happen elsewhere.
+// Usage: Imported by auth-bootstrap and sanity tests to keep cookie import behavior deterministic and reviewable.
+// Invariants/Assumptions: Security-sensitive auth cookies are allowlisted intentionally, and analytics/ambient cookies should be excluded by default.
 const AUTH_COOKIE_NAME_PATTERNS = [
   /^__Secure-next-auth\.session-token(?:\.|$)/,
   /^__Secure-next-auth\.callback-url$/,

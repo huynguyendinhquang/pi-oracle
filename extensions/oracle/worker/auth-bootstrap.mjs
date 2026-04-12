@@ -1,3 +1,8 @@
+// Purpose: Bootstrap isolated oracle browser auth by importing real Chrome cookies and validating ChatGPT session readiness.
+// Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, and persist diagnostics for auth failures.
+// Scope: Auth bootstrap worker only; long-running oracle job execution stays in run-job.mjs and shared lifecycle/state helpers stay elsewhere.
+// Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
+// Invariants/Assumptions: Runs against a local macOS Chrome profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";

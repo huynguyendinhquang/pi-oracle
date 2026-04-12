@@ -3,11 +3,11 @@
 // Scope: Extension-side runtime coordination only; shared concurrency/process primitives live in extensions/oracle/shared.
 // Usage: Imported by jobs, tools, and queue logic to provision or tear down isolated oracle browser runtimes.
 // Invariants/Assumptions: Lease metadata is the admission source of truth, tracked worker identity checks defend against PID reuse, and runtime cleanup always attempts lease release.
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
 import type { OracleConfig } from "./config.js";
@@ -354,6 +354,3 @@ export async function cleanupRuntimeArtifacts(runtime: {
   return report;
 }
 
-export function stableProjectLabel(projectId: string): string {
-  return basename(projectId) || createHash("sha256").update(projectId).digest("hex").slice(0, 8);
-}
