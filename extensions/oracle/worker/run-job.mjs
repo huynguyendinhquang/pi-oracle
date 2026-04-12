@@ -17,6 +17,7 @@ import {
   snapshotWeaklyMatchesRequestedModel,
   autoSwitchToThinkingSelectionVisible,
 } from "./chatgpt-ui-helpers.mjs";
+import { assistantSnapshotSlice, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -679,14 +680,7 @@ async function currentUrl(job) {
 }
 
 function stripQuery(url) {
-  try {
-    const parsed = new URL(url);
-    parsed.hash = "";
-    parsed.search = "";
-    return parsed.toString();
-  } catch {
-    return url;
-  }
+  return stripUrlQueryAndHash(url);
 }
 
 async function snapshotText(job) {
@@ -1327,46 +1321,17 @@ async function assistantMessages(job) {
   return result.messages.map((message) => ({ text: typeof message?.text === "string" ? message.text : "" }));
 }
 
-function assistantSnapshotSlice(snapshot, responseIndex) {
-  const lines = snapshot.split("\n");
-  const assistantHeadingIndices = lines.flatMap((line, index) => (line.includes('heading "ChatGPT said:"') ? [index] : []));
-  const startIndex = assistantHeadingIndices[responseIndex];
-  if (startIndex === undefined) return undefined;
-
-  const endCandidates = [];
-  const nextAssistantIndex = assistantHeadingIndices[responseIndex + 1];
-  if (nextAssistantIndex !== undefined) endCandidates.push(nextAssistantIndex);
-
-  const composerIndex = lines.findIndex(
-    (line, index) => index > startIndex && line.includes(`textbox "${CHATGPT_LABELS.composer}"`),
-  );
-  if (composerIndex !== -1) endCandidates.push(composerIndex);
-
-  const endIndex = endCandidates.length > 0 ? Math.min(...endCandidates) : undefined;
-  return lines.slice(startIndex, endIndex).join("\n");
-}
-
 async function waitForStableChatUrl(job, previousChatUrl) {
   const timeoutAt = Date.now() + 60_000;
-  let lastUrl = "";
-  let stableCount = 0;
+  /** @type {import("./chatgpt-flow-helpers.d.mts").OracleStableValueState | undefined} */
+  let stableState;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
-    const url = stripQuery(await currentUrl(job));
-    let isConversationUrl = false;
-    try {
-      isConversationUrl = /\/c\/[A-Za-z0-9-]+$/i.test(new URL(url).pathname);
-    } catch {
-      isConversationUrl = false;
-    }
-    const isKnownFollowUpUrl = previousChatUrl ? stripQuery(previousChatUrl) === url : false;
-
-    if (isConversationUrl || isKnownFollowUpUrl) {
-      if (url === lastUrl) stableCount += 1;
-      else stableCount = 1;
-      lastUrl = url;
-      if (stableCount >= 2) return url;
+    const candidateUrl = resolveStableConversationUrlCandidate(await currentUrl(job), previousChatUrl);
+    if (candidateUrl) {
+      stableState = nextStableValueState(stableState, candidateUrl);
+      if (stableState.stableCount >= 2) return candidateUrl;
     }
 
     await sleep(1000);
@@ -1467,7 +1432,7 @@ function preferredArtifactName(label, index) {
 
 async function collectArtifactCandidates(job, responseIndex, responseText = "") {
   const snapshot = await snapshotText(job);
-  const targetSlice = assistantSnapshotSlice(snapshot, responseIndex);
+  const targetSlice = assistantSnapshotSlice(snapshot, CHATGPT_LABELS.composer, responseIndex);
   if (!targetSlice) return { snapshot, targetSlice, candidates: [], suspiciousLabels: [] };
 
   const structural = await evalPage(

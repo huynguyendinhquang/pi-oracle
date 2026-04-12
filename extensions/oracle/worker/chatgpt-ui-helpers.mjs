@@ -1,10 +1,24 @@
+// Purpose: Provide pure ChatGPT UI interpretation helpers shared by oracle worker/auth flows.
+// Responsibilities: Normalize allowed origins, interpret model-selection snapshots, and derive assistant-completion signatures.
+// Scope: Pure snapshot/text heuristics only; browser I/O and retry loops stay in the worker/auth entrypoints.
+// Usage: Imported by worker/auth runtime code and sanity tests to keep browser-driven logic behaviorally testable.
+// Invariants/Assumptions: Snapshot text comes from agent-browser `snapshot -i`; helper outputs must stay deterministic and side-effect free.
+
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
+
+/** @typedef {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} OracleUiModelFamily */
+/** @typedef {import("./chatgpt-ui-helpers.d.mts").OracleUiSelection} OracleUiSelection */
+/** @typedef {import("./artifact-heuristics.d.mts").SnapshotEntry} SnapshotEntry */
+
+/** @typedef {{ responseText: string; artifactLabels?: string[]; suspiciousArtifactLabels?: string[] }} CompletionSignatureArgs */
+/** @typedef {{ hasStopStreaming: boolean; hasTargetCopyResponse: boolean; responseText: string; artifactLabels?: string[]; suspiciousArtifactLabels?: string[] }} DerivedCompletionSignatureArgs */
 
 export const CHATGPT_CANONICAL_APP_ORIGINS = Object.freeze([
   "https://chatgpt.com",
   "https://chat.openai.com",
 ]);
 
+/** @type {Record<OracleUiModelFamily, string>} */
 const MODEL_FAMILY_PREFIX = {
   instant: "Instant ",
   thinking: "Thinking ",
@@ -13,6 +27,10 @@ const MODEL_FAMILY_PREFIX = {
 
 const AUTO_SWITCH_LABEL = "Auto-switch to Thinking";
 
+/**
+ * @param {string | undefined} url
+ * @returns {string | undefined}
+ */
 function originFromUrl(url) {
   if (typeof url !== "string" || !url.trim()) return undefined;
   try {
@@ -22,18 +40,35 @@ function originFromUrl(url) {
   }
 }
 
+/**
+ * @param {Array<string | undefined>} values
+ * @returns {string[]}
+ */
 function uniqueStrings(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value))];
 }
 
+/**
+ * @param {string | undefined} value
+ * @returns {string | undefined}
+ */
 function titleCase(value) {
   return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
 }
 
+/**
+ * @param {string | undefined} value
+ * @returns {string}
+ */
 function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * @param {string} chatUrl
+ * @param {string | undefined} authUrl
+ * @returns {string[]}
+ */
 export function buildAllowedChatGptOrigins(chatUrl, authUrl) {
   return uniqueStrings([
     ...CHATGPT_CANONICAL_APP_ORIGINS,
@@ -43,6 +78,11 @@ export function buildAllowedChatGptOrigins(chatUrl, authUrl) {
   ]);
 }
 
+/**
+ * @param {string | undefined} label
+ * @param {OracleUiModelFamily} family
+ * @returns {boolean}
+ */
 export function matchesModelFamilyLabel(label, family) {
   const normalized = String(label || "");
   const prefix = MODEL_FAMILY_PREFIX[family];
@@ -50,12 +90,22 @@ export function matchesModelFamilyLabel(label, family) {
   return normalized === exact || normalized.startsWith(prefix) || normalized.startsWith(`${exact},`);
 }
 
+/**
+ * @param {OracleUiSelection} selection
+ * @returns {string | undefined}
+ */
 export function requestedEffortLabel(selection) {
   return selection?.effort ? titleCase(selection.effort) : undefined;
 }
 
+/**
+ * @param {string} snapshot
+ * @param {string | undefined} effortLabel
+ * @returns {boolean}
+ */
 export function effortSelectionVisible(snapshot, effortLabel) {
   if (!effortLabel) return true;
+  /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
   return entries.some((entry) => {
     if (entry.disabled) return false;
@@ -72,19 +122,27 @@ export function effortSelectionVisible(snapshot, effortLabel) {
   });
 }
 
+/**
+ * @param {string} snapshot
+ * @returns {boolean}
+ */
 export function thinkingChipVisible(snapshot) {
   return /button "(?:Light|Standard|Extended|Heavy)(?: thinking)?(?:, click to remove)?"/i.test(snapshot);
 }
 
+/**
+ * @param {string} snapshot
+ * @returns {boolean}
+ */
 export function snapshotHasModelConfigurationUi(snapshot) {
+  /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
   const visibleFamilies = new Set(
     entries
       .filter((entry) => entry.kind === "button" && typeof entry.label === "string")
       .flatMap((entry) =>
-        Object.keys(MODEL_FAMILY_PREFIX)
-          .filter((family) => matchesModelFamilyLabel(entry.label, family))
-          .map((family) => family),
+        /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])
+          .filter((family) => matchesModelFamilyLabel(entry.label, family)),
       ),
   );
   const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === "Close" && !entry.disabled);
@@ -94,7 +152,12 @@ export function snapshotHasModelConfigurationUi(snapshot) {
   return visibleFamilies.size >= 2 || hasCloseButton || hasEffortCombobox;
 }
 
+/**
+ * @param {string} snapshot
+ * @returns {boolean | undefined}
+ */
 export function autoSwitchToThinkingSelectionVisible(snapshot) {
+  /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
   let foundControl = false;
 
@@ -111,6 +174,11 @@ export function autoSwitchToThinkingSelectionVisible(snapshot) {
   return foundControl ? false : undefined;
 }
 
+/**
+ * @param {string} snapshot
+ * @param {OracleUiSelection} selection
+ * @returns {boolean}
+ */
 export function snapshotCanSafelySkipModelConfiguration(snapshot, selection) {
   if (!snapshotStronglyMatchesRequestedModel(snapshot, selection)) return false;
 
@@ -126,11 +194,15 @@ export function snapshotCanSafelySkipModelConfiguration(snapshot, selection) {
   return true;
 }
 
+/**
+ * @param {string} snapshot
+ * @param {OracleUiSelection} selection
+ * @returns {boolean}
+ */
 export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
+  /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
-  const familyMatched = entries.some((entry) => {
-    return !entry.disabled && matchesModelFamilyLabel(entry.label, selection.modelFamily);
-  });
+  const familyMatched = entries.some((entry) => !entry.disabled && matchesModelFamilyLabel(entry.label, selection.modelFamily));
   if (!familyMatched) return false;
 
   const configurationUiVisible = snapshotHasModelConfigurationUi(snapshot);
@@ -153,11 +225,15 @@ export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
   return false;
 }
 
+/**
+ * @param {string} snapshot
+ * @param {OracleUiSelection} selection
+ * @returns {boolean}
+ */
 export function snapshotWeaklyMatchesRequestedModel(snapshot, selection) {
+  /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
-  const familyMatched = entries.some((entry) => {
-    return !entry.disabled && matchesModelFamilyLabel(entry.label, selection.modelFamily);
-  });
+  const familyMatched = entries.some((entry) => !entry.disabled && matchesModelFamilyLabel(entry.label, selection.modelFamily));
 
   if (selection.modelFamily === "thinking") {
     return familyMatched || effortSelectionVisible(snapshot, requestedEffortLabel(selection));
@@ -177,6 +253,10 @@ export function snapshotWeaklyMatchesRequestedModel(snapshot, selection) {
   return false;
 }
 
+/**
+ * @param {CompletionSignatureArgs} args
+ * @returns {string | undefined}
+ */
 export function buildAssistantCompletionSignature({ responseText, artifactLabels = [], suspiciousArtifactLabels = [] }) {
   const normalizedResponse = normalizeText(responseText);
   if (normalizedResponse) return `text:${normalizedResponse}`;
@@ -187,6 +267,10 @@ export function buildAssistantCompletionSignature({ responseText, artifactLabels
   return undefined;
 }
 
+/**
+ * @param {DerivedCompletionSignatureArgs} args
+ * @returns {string | undefined}
+ */
 export function deriveAssistantCompletionSignature({
   hasStopStreaming,
   hasTargetCopyResponse,

@@ -211,6 +211,7 @@ Review the code and design docs before using it with sensitive material.
 ```bash
 npm run check:oracle-extension
 npm run typecheck
+npm run typecheck:worker-helpers
 npm run sanity:oracle
 npm run pack:check
 # conventional local gate

@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": [
+    "extensions/oracle/worker/chatgpt-ui-helpers.mjs",
+    "extensions/oracle/worker/chatgpt-ui-helpers.d.mts",
+    "extensions/oracle/worker/chatgpt-flow-helpers.mjs",
+    "extensions/oracle/worker/chatgpt-flow-helpers.d.mts",
+    "extensions/oracle/worker/auth-flow-helpers.mjs",
+    "extensions/oracle/worker/auth-flow-helpers.d.mts"
+  ]
+}

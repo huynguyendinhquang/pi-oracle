@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { buildAllowedChatGptOrigins } from "./chatgpt-ui-helpers.mjs";
+import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 
 const rawConfig = process.argv[2];
 if (!rawConfig) {
@@ -594,22 +595,7 @@ function buildLoginProbeScript(timeoutMs) {
 
 async function loginProbe() {
   const result = await evalPage(buildLoginProbeScript(LOGIN_PROBE_TIMEOUT_MS), "login probe eval");
-  if (!result || typeof result !== "object") {
-    return { ok: false, status: 0, error: "invalid-probe-result" };
-  }
-  return {
-    ok: result.ok === true,
-    status: typeof result.status === "number" ? result.status : 0,
-    pageUrl: typeof result.pageUrl === "string" ? result.pageUrl : undefined,
-    domLoginCta: result.domLoginCta === true,
-    onAuthPage: result.onAuthPage === true,
-    error: typeof result.error === "string" ? result.error : undefined,
-    bodyKeys: Array.isArray(result.bodyKeys) ? result.bodyKeys : [],
-    bodyHasId: result.bodyHasId === true,
-    bodyHasEmail: result.bodyHasEmail === true,
-    name: typeof result.name === "string" ? result.name : undefined,
-    responsePreview: typeof result.responsePreview === "string" ? result.responsePreview : undefined,
-  };
+  return normalizeLoginProbeResult(result);
 }
 
 async function captureDiagnostics(reason) {
@@ -629,116 +615,22 @@ async function captureDiagnostics(reason) {
 }
 
 function classifyChatPage({ url, snapshot, body, probe }) {
-  const text = `${snapshot}\n${body}`;
-  const allowedOrigins = buildAllowedChatGptOrigins(config.browser.chatUrl, config.browser.authUrl);
-
-  const challengePatterns = [
-    /just a moment/i,
-    /verify you are human/i,
-    /cloudflare/i,
-    /captcha|turnstile|hcaptcha/i,
-    /unusual activity detected/i,
-    /we detect suspicious activity/i,
-  ];
-  if (challengePatterns.some((pattern) => pattern.test(text))) {
-    return {
-      state: "challenge_blocking",
-      message:
-        `ChatGPT challenge detected after syncing cookies from ${cookieSourceLabel()}. ` +
-        `The isolated oracle browser was left open on profile ${runtimeProfileDir}; complete the challenge there, then rerun /oracle-auth. Logs: ${LOG_PATH}`,
-    };
-  }
-
-  if (/http error 431|request header or cookie too large/i.test(text)) {
-    return {
-      state: "login_required",
-      message:
-        `Imported auth hit HTTP 431 during ChatGPT auth resolution, which usually means the imported cookie set is too large or stale. ` +
-        `Inspect ${LOG_PATH}.`,
-    };
-  }
-
-  const outagePatterns = [
-    /something went wrong/i,
-    /a network error occurred/i,
-    /an error occurred while connecting to the websocket/i,
-    /try again later/i,
-  ];
-  if (outagePatterns.some((pattern) => pattern.test(text))) {
-    return { state: "transient_outage_error", message: `ChatGPT is showing a transient outage/error page. Logs: ${LOG_PATH}` };
-  }
-
-  const onAllowedOrigin = allowedOrigins.some((origin) => url.startsWith(origin));
-  const hasComposer = snapshot.includes(`textbox \"${CHATGPT_LABELS.composer}\"`);
-  const hasAddFiles = snapshot.includes(`button \"${CHATGPT_LABELS.addFiles}\"`);
-  const hasModelControl =
-    snapshot.includes('button "Model selector"') ||
-    /button "(Instant|Thinking|Pro)(?: [^"]*)?"/.test(snapshot);
-
-  if (probe?.status === 401 || probe?.status === 403) {
-    return {
-      state: "login_required",
-      message:
-        `Synced cookies from ${cookieSourceLabel()}, but ChatGPT still rejected the session ` +
-        `(status=${probe?.status ?? 0}). Check auth.chromeProfile/auth.chromeCookiePath and inspect ${LOG_PATH}.`,
-    };
-  }
-
-  if (probe?.onAuthPage) {
-    if (probe?.bodyHasId || probe?.bodyHasEmail) {
-      return {
-        state: "auth_transitioning",
-        message:
-          `ChatGPT is on /auth/login, but /backend-api/me returned a partial authenticated session. ` +
-          `Trying to drive the login resolution flow. Logs: ${LOG_PATH}`,
-      };
-    }
-    return {
-      state: "login_required",
-      message:
-        `Synced cookies from ${cookieSourceLabel()}, but ChatGPT still rejected the session ` +
-        `(status=${probe?.status ?? 0}). Check auth.chromeProfile/auth.chromeCookiePath and inspect ${LOG_PATH}.`,
-    };
-  }
-
-  if (onAllowedOrigin && probe?.status === 200 && hasComposer && hasAddFiles && hasModelControl) {
-    if (!probe?.domLoginCta) {
-      return {
-        state: "authenticated_and_ready",
-        message: `Imported ChatGPT auth from ${cookieSourceLabel()} into the isolated oracle profile. Logs: ${LOG_PATH}`,
-      };
-    }
-
-    return {
-      state: "auth_transitioning",
-      message:
-        probe?.bodyHasId || probe?.bodyHasEmail
-          ? `ChatGPT backend session is authenticated but the shell still shows public CTA chrome. Logs: ${LOG_PATH}`
-          : `ChatGPT accepted cookies but is still hydrating/auth-selecting. Logs: ${LOG_PATH}`,
-    };
-  }
-
-  if (onAllowedOrigin && probe?.ok && hasComposer && hasAddFiles && hasModelControl) {
-    return {
-      state: "authenticated_and_ready",
-      message: `Imported ChatGPT auth from ${cookieSourceLabel()} into the isolated oracle profile. Logs: ${LOG_PATH}`,
-    };
-  }
-
-  if (url && !onAllowedOrigin) {
-    return { state: "login_required", message: `Imported auth redirected away from the expected ChatGPT origin. Logs: ${LOG_PATH}` };
-  }
-
-  return { state: "unknown", message: `ChatGPT page state is not yet ready. Logs: ${LOG_PATH}` };
+  return classifyChatAuthPage({
+    url,
+    snapshot,
+    body,
+    probe,
+    allowedOrigins: buildAllowedChatGptOrigins(config.browser.chatUrl, config.browser.authUrl),
+    cookieSourceLabel: cookieSourceLabel(),
+    runtimeProfileDir,
+    logPath: LOG_PATH,
+    composerLabel: CHATGPT_LABELS.composer,
+    addFilesLabel: CHATGPT_LABELS.addFiles,
+  });
 }
 
 async function maybeSelectAccountIdentity(snapshot, probe) {
-  const candidates = [];
-  if (typeof probe?.name === "string" && probe.name.trim()) {
-    candidates.push(probe.name.trim());
-    const firstToken = probe.name.trim().split(/\s+/)[0];
-    if (firstToken && firstToken !== probe.name.trim()) candidates.push(firstToken);
-  }
+  const candidates = buildAccountChooserCandidateLabels(probe?.name);
 
   for (const label of candidates) {
     const entry = findEntry(

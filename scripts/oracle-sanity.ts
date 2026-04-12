@@ -29,6 +29,8 @@ import {
   snapshotStronglyMatchesRequestedModel,
   snapshotWeaklyMatchesRequestedModel,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
+import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
+import { assistantSnapshotSlice, isConversationPathUrl, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
   acquireLock as acquireWorkerStateLock,
   createLease as createWorkerStateLease,
@@ -3404,7 +3406,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     pi?: { prompts?: string[] };
     engines?: { node?: string };
     os?: string[];
-    scripts?: { test?: string; prepublishOnly?: string };
+    scripts?: { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
     overrides?: { "basic-ftp"?: string };
   };
   const pi: any = {
@@ -3578,6 +3580,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.engines?.node === ">=22", "package.json should advertise the actual Node.js support floor");
   assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
+  assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
+  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
   assert(pkg.overrides?.["basic-ftp"] === "^5.2.2", "package.json should override basic-ftp to a patched version");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
@@ -3615,9 +3619,11 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("hasAdmissionBlockingWorker"), "worker queued-promotion admission should only stay blocked when a recorded live worker still owns cleanup");
   assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
   assert(workerSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "worker should use the shared ChatGPT UI helper module for model/origin/completion logic");
+  assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(authBootstrapSource.includes("from \"./state-locks.mjs\""), "auth bootstrap should use the shared hardened state-lock helper instead of keeping divergent auth-lock crash recovery logic inline");
   assert(authBootstrapSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "auth bootstrap should use the shared ChatGPT origin helper so runtime/auth stay aligned");
+  assert(authBootstrapSource.includes("from \"./auth-flow-helpers.mjs\""), "auth bootstrap should use the extracted auth flow helper module for probe normalization and page classification");
   assert(!authBootstrapSource.includes('"/tmp/oracle-auth'), "auth bootstrap should not write diagnostics to fixed /tmp/oracle-auth.* paths");
   assert(authBootstrapSource.includes('mkdtemp(join(tmpdir(), "pi-oracle-auth-"))'), "auth bootstrap should isolate diagnostics in a unique private temp directory per run");
   assert(authBootstrapSource.includes("AGENT_BROWSER_COMMAND_TIMEOUT_MS"), "auth bootstrap should enforce process-level timeouts for agent-browser commands");
@@ -3981,6 +3987,127 @@ function testChatGptUiHelpers(): void {
   );
 }
 
+function testAuthFlowHelpers(): void {
+  const invalidProbe = normalizeLoginProbeResult(undefined);
+  assert(invalidProbe.ok === false && invalidProbe.status === 0 && invalidProbe.error === "invalid-probe-result", "invalid login probe payloads should normalize to a safe fallback result");
+
+  const normalizedProbe = normalizeLoginProbeResult({
+    ok: true,
+    status: 200,
+    pageUrl: "https://chatgpt.com/",
+    domLoginCta: false,
+    onAuthPage: false,
+    bodyKeys: ["id", 42, "email"],
+    bodyHasId: true,
+    bodyHasEmail: true,
+    name: "Ada Lovelace",
+  });
+  assert(normalizedProbe.ok === true && normalizedProbe.bodyKeys?.join(",") === "id,email", "login probe normalization should preserve typed fields and drop invalid body keys");
+
+  const chooserLabels = buildAccountChooserCandidateLabels("Ada Lovelace");
+  assert(chooserLabels.length === 2 && chooserLabels[0] === "Ada Lovelace" && chooserLabels[1] === "Ada", "account chooser helpers should try both the full name and the first token");
+
+  const allowedOrigins = buildAllowedChatGptOrigins("https://chatgpt.com/", "https://chatgpt.com/auth/login");
+  const readySnapshot = [
+    '- textbox "Chat with ChatGPT" [ref=e1]',
+    '- button "Add files and more" [ref=e2]',
+    '- button "Model selector" [ref=e3]',
+  ].join("\n");
+
+  const challengeState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: readySnapshot,
+    body: "Just a moment... verify you are human",
+    probe: normalizedProbe,
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(challengeState.state === "challenge_blocking", "auth classification should prioritize human-verification challenge pages");
+
+  const rejectedState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: readySnapshot,
+    body: "",
+    probe: { ...normalizedProbe, ok: false, status: 401 },
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(rejectedState.state === "login_required", "auth classification should treat 401 probe results as login-required");
+
+  const transitioningState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: readySnapshot,
+    body: "",
+    probe: { ...normalizedProbe, domLoginCta: true, bodyHasEmail: true },
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(transitioningState.state === "auth_transitioning", "auth classification should treat CTA-visible authenticated shells as transitioning");
+
+  const readyState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: readySnapshot,
+    body: "",
+    probe: normalizedProbe,
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(readyState.state === "authenticated_and_ready", "auth classification should accept fully ready ChatGPT shells on allowed origins");
+
+  const redirectedState = classifyChatAuthPage({
+    url: "https://example.com/login",
+    snapshot: readySnapshot,
+    body: "",
+    probe: normalizedProbe,
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(redirectedState.state === "login_required", "auth classification should reject redirects away from allowed ChatGPT origins");
+}
+
+function testChatGptFlowHelpers(): void {
+  const snapshot = [
+    '- heading "ChatGPT said:" [level=2, ref=e1]',
+    '- paragraph [ref=e2]: First answer',
+    '- heading "ChatGPT said:" [level=2, ref=e3]',
+    '- paragraph [ref=e4]: Second answer',
+    '- textbox "Chat with ChatGPT" [ref=e5]',
+  ].join("\n");
+  assert(
+    assistantSnapshotSlice(snapshot, "Chat with ChatGPT", 1)?.includes("Second answer"),
+    "conversation helpers should isolate the requested assistant snapshot slice",
+  );
+  assert(stripUrlQueryAndHash("https://chatgpt.com/c/abc?model=gpt#section") === "https://chatgpt.com/c/abc", "conversation helpers should strip query/hash components from ChatGPT URLs");
+  assert(isConversationPathUrl("https://chatgpt.com/c/abc-123"), "conversation helpers should recognize ChatGPT conversation URLs");
+  assert(!isConversationPathUrl("https://chatgpt.com/gpts"), "conversation helpers should reject non-conversation ChatGPT routes");
+  assert(
+    resolveStableConversationUrlCandidate("https://chatgpt.com/c/abc?model=gpt", undefined) === "https://chatgpt.com/c/abc",
+    "conversation helpers should normalize direct conversation URLs into stable candidates",
+  );
+  assert(
+    resolveStableConversationUrlCandidate("https://chatgpt.com/share/xyz?foo=1", "https://chatgpt.com/share/xyz") === "https://chatgpt.com/share/xyz",
+    "conversation helpers should accept stable follow-up URLs when they match the previous chat URL",
+  );
+  assert(
+    resolveStableConversationUrlCandidate("https://chatgpt.com/share/xyz", "https://chatgpt.com/share/other") === undefined,
+    "conversation helpers should ignore unrelated non-conversation routes",
+  );
+  const firstStableState = nextStableValueState(undefined, "https://chatgpt.com/c/abc");
+  const secondStableState = nextStableValueState(firstStableState, "https://chatgpt.com/c/abc");
+  const resetStableState = nextStableValueState(secondStableState, "https://chatgpt.com/c/xyz");
+  assert(firstStableState.stableCount === 1 && secondStableState.stableCount === 2 && resetStableState.stableCount === 1, "stable-value helpers should increment matching observations and reset on change");
+}
+
 async function testSanityRunnerIsolation(): Promise<void> {
   const runnerSource = await readFile(new URL("./oracle-sanity-runner.mjs", import.meta.url), "utf8");
   assert(runnerSource.includes("/tmp/pi-oracle-sanity-state-"), "sanity runner should force an isolated oracle state dir");
@@ -4283,6 +4410,8 @@ async function main() {
   await testSanityRunnerIsolation();
   testDurableWorkerHandoff();
   testChatGptUiHelpers();
+  testAuthFlowHelpers();
+  testChatGptFlowHelpers();
   testArtifactCandidateHeuristics();
   await testPollerHostSafety();
   await rm(getOracleStateDir(), { recursive: true, force: true }).catch(() => undefined);
