@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
-import { loadOracleConfig } from "./config.js";
+import { formatOracleAuthConfigRemediation, formatOracleAuthConfigSummary, getOracleConfigLoadDetails, loadOracleConfig } from "./config.js";
 import {
   cancelOracleJob,
   getJobDir,
@@ -50,6 +50,12 @@ function readScopedJob(jobId: string, cwd: string) {
 
 async function runAuthBootstrap(authWorkerPath: string, cwd: string): Promise<string> {
   const config = loadOracleConfig(cwd);
+  const configLoad = getOracleConfigLoadDetails(cwd);
+  const authConfigGuidance = {
+    ...configLoad,
+    remediation: formatOracleAuthConfigRemediation(configLoad),
+    summary: formatOracleAuthConfigSummary(configLoad),
+  };
   try {
     await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_auth", cwd }, async () => {
       await reconcileStaleOracleJobs();
@@ -60,7 +66,7 @@ async function runAuthBootstrap(authWorkerPath: string, cwd: string): Promise<st
   }
 
   return await new Promise<string>((resolve, reject) => {
-    const child = spawn(process.execPath, [authWorkerPath, JSON.stringify(config)], {
+    const child = spawn(process.execPath, [authWorkerPath, JSON.stringify({ config, configLoad: authConfigGuidance })], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });

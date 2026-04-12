@@ -258,6 +258,54 @@ const detectedChromeUserAgent = detectDefaultChromeUserAgent(detectedChromeExecu
 const agentExtensionsDir = join(getAgentDir(), "extensions");
 const detectedChromeProfileName = detectDefaultChromeProfileName();
 
+export interface OracleConfigLoadDetails {
+  agentDir: string;
+  agentConfigPath: string;
+  agentConfigExists: boolean;
+  projectConfigPath: string;
+  projectConfigExists: boolean;
+  effectiveAuthConfigPath: string;
+  effectiveAuthScope: "agent";
+}
+
+export function getOracleConfigLoadDetails(cwd: string): OracleConfigLoadDetails {
+  const agentDir = getAgentDir();
+  const agentConfigPath = join(agentDir, "extensions", "oracle.json");
+  const projectConfigPath = join(cwd, ".pi", "extensions", "oracle.json");
+  return {
+    agentDir,
+    agentConfigPath,
+    agentConfigExists: existsSync(agentConfigPath),
+    projectConfigPath,
+    projectConfigExists: existsSync(projectConfigPath),
+    effectiveAuthConfigPath: agentConfigPath,
+    effectiveAuthScope: "agent",
+  };
+}
+
+export function formatOracleAuthConfigRemediation(details: OracleConfigLoadDetails): string {
+  if (!details.projectConfigExists) {
+    return `Set auth.chromeProfile / auth.chromeCookiePath in ${details.effectiveAuthConfigPath}.`;
+  }
+  return (
+    `Set auth.chromeProfile / auth.chromeCookiePath in ${details.effectiveAuthConfigPath}. ` +
+    `Project overrides are also read from ${details.projectConfigPath}, but auth.* is loaded from ${details.effectiveAuthConfigPath}.`
+  );
+}
+
+export function formatOracleAuthConfigSummary(details: OracleConfigLoadDetails): string {
+  const lines = [
+    `Effective oracle auth config: ${details.effectiveAuthConfigPath} (agent dir: ${details.agentDir}${details.agentConfigExists ? "" : "; create this file to override auth.*"})`,
+  ];
+  if (details.projectConfigExists) {
+    lines.push(
+      `Project oracle config also loaded: ${details.projectConfigPath} ` +
+        `(project scope can override ${[...PROJECT_OVERRIDE_KEYS].join("/")} only; auth.* still comes from ${details.effectiveAuthConfigPath}).`,
+    );
+  }
+  return lines.join("\n");
+}
+
 export const DEFAULT_CONFIG: OracleConfig = {
   defaults: {
     preset: "pro_extended",
@@ -514,7 +562,8 @@ function validateOracleConfig(value: unknown): OracleConfig {
 }
 
 export function loadOracleConfig(cwd: string): OracleConfig {
-  const globalConfig = readJson(join(getAgentDir(), "extensions", "oracle.json"));
-  const projectConfig = filterProjectConfig(readJson(join(cwd, ".pi", "extensions", "oracle.json")));
+  const details = getOracleConfigLoadDetails(cwd);
+  const globalConfig = readJson(details.agentConfigPath);
+  const projectConfig = filterProjectConfig(readJson(details.projectConfigPath));
   return validateOracleConfig(deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig));
 }

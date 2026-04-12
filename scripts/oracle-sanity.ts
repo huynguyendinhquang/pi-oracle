@@ -14,6 +14,9 @@ import { Check } from "@sinclair/typebox/value";
 import {
   coerceOracleSubmitPresetId,
   DEFAULT_CONFIG,
+  formatOracleAuthConfigRemediation,
+  formatOracleAuthConfigSummary,
+  getOracleConfigLoadDetails,
   ORACLE_SUBMIT_PRESETS,
   resolveOracleSubmitPreset,
   type OracleConfig,
@@ -788,6 +791,68 @@ while :; do sleep 1; done
     assert(Number.isFinite(browserPid), "auth bootstrap timeout test should record an agent-browser pid");
     assert(await waitForPidExit(browserPid), "auth bootstrap should terminate the hung agent-browser process after timing out");
   } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-auth-config-guidance-"));
+  const projectDir = join(fixtureDir, "project");
+  const agentDir = join(fixtureDir, "agent");
+  const projectExtensionsDir = join(projectDir, ".pi", "extensions");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const agentBrowserPath = join(fixtureDir, "agent-browser");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const authConfig: OracleConfig = {
+    ...config,
+    browser: {
+      ...config.browser,
+      sessionPrefix: `oracle-auth-config-guidance-${randomUUID()}`,
+      authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
+      runtimeProfilesDir: join(agentExtensionsDir, "oracle-runtime-profiles"),
+    },
+    auth: {
+      ...config.auth,
+      chromeCookiePath: join(fixtureDir, "missing-cookies.sqlite"),
+    },
+  };
+
+  try {
+    await mkdir(projectExtensionsDir, { recursive: true, mode: 0o700 });
+    await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(projectExtensionsDir, "oracle.json"), `${JSON.stringify({ defaults: { preset: "instant" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await writeExecutableScript(agentBrowserPath, "#!/bin/sh\nexit 0\n");
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const configLoad = getOracleConfigLoadDetails(projectDir);
+    const authConfigGuidance = {
+      ...configLoad,
+      remediation: formatOracleAuthConfigRemediation(configLoad),
+      summary: formatOracleAuthConfigSummary(configLoad),
+    };
+
+    const result = await runProcess(
+      process.execPath,
+      [join(process.cwd(), "extensions/oracle/worker/auth-bootstrap.mjs"), JSON.stringify({ config: authConfig, configLoad: authConfigGuidance })],
+      {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          PI_CODING_AGENT_DIR: agentDir,
+          AGENT_BROWSER_PATH: agentBrowserPath,
+          PI_ORACLE_STATE_DIR: join(fixtureDir, "state"),
+        },
+        timeoutMs: 8_000,
+      },
+    );
+
+    assert(result.code !== 0, "auth bootstrap config-guidance test should fail when source cookies are unavailable");
+    assert(result.stderr.includes(configLoad.effectiveAuthConfigPath), "auth bootstrap failure guidance should point at the effective agent config path for the active PI_CODING_AGENT_DIR");
+    assert(result.stderr.includes(configLoad.projectConfigPath), "auth bootstrap failure guidance should mention the loaded project config path when one is present");
+    assert(result.stderr.includes("auth.* still comes from"), "auth bootstrap failure guidance should explain that auth settings still come from the agent config when a project config also exists");
+    assert(!result.stderr.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap failure guidance should not hardcode the default global config path under isolated agent dirs");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
     await rm(fixtureDir, { recursive: true, force: true });
   }
 }
@@ -2578,6 +2643,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
   assert(commandsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel command should only promote queued jobs after a clean cancellation");
   assert(commandsSource.includes("Refusing to remove non-terminal oracle job"), "oracle clean should refuse queued jobs");
+  assert(commandsSource.includes("getOracleConfigLoadDetails"), "oracle auth bootstrap should pass effective config-load metadata into the auth worker");
   assert(jobsSource.includes("report.attempted.push(\"queuedArchive\")"), "cleanup retry should treat queued archive deletion as a first-class cleanup target");
   assert(jobsSource.includes("Failed to remove queued archive"), "queued cleanup retries should preserve warnings when archive deletion keeps failing");
   assert(jobsSource.includes("if (cleanupReport.warnings.length > 0)"), "terminal cleanup should retain job state when cleanup reports warnings");
@@ -2628,6 +2694,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS"), "auth bootstrap should allow shorter timeout overrides for close-time smoke tests");
   assert(authBootstrapSource.includes("Object.hasOwn(maybeOptions, \"timeoutMs\")"), "auth bootstrap targetCommand should accept explicit timeout overrides");
   assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
+  assert(authBootstrapSource.includes("Effective oracle auth config:"), "auth bootstrap failures should report the effective auth config path for the active agent dir");
+  assert(!authBootstrapSource.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap should not hardcode the default global config path in user-facing remediation guidance");
   assert(stateLocksSource.includes("state-coordination-helpers.mjs"), "worker state-lock wrappers should delegate to the shared state coordination helper module");
   assert(sharedStateSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "shared worker state-lock helper should use a bounded grace before reclaiming metadata-less state dirs");
   assert(sharedStateSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "shared worker state-lock helper should use a longer grace for in-flight .tmp-* dirs under concurrent sweep");
@@ -3717,6 +3785,7 @@ async function main() {
   await testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config);
   await testRuntimeProfileCloneTimeoutKillsHungCp(config);
   await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
+  await testAuthBootstrapReportsEffectiveConfigPaths(config);
   await testJobCreationPersistsSelectionSnapshot(config);
   await testOracleSubmitPresetGuardrails();
   await testOraclePreflightReportsBlockingReadinessStates();

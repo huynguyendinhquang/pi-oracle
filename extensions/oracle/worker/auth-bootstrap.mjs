@@ -20,7 +20,23 @@ if (!rawConfig) {
   process.exit(1);
 }
 
-const config = JSON.parse(rawConfig);
+const parsedConfigPayload = JSON.parse(rawConfig);
+const config =
+  parsedConfigPayload &&
+    typeof parsedConfigPayload === "object" &&
+    !Array.isArray(parsedConfigPayload) &&
+    Object.hasOwn(parsedConfigPayload, "config")
+    ? parsedConfigPayload.config
+    : parsedConfigPayload;
+const configLoad =
+  parsedConfigPayload &&
+    typeof parsedConfigPayload === "object" &&
+    !Array.isArray(parsedConfigPayload) &&
+    Object.hasOwn(parsedConfigPayload, "configLoad") &&
+    parsedConfigPayload.configLoad &&
+    typeof parsedConfigPayload.configLoad === "object"
+    ? parsedConfigPayload.configLoad
+    : undefined;
 const CHATGPT_LABELS = {
   composer: "Chat with ChatGPT",
   addFiles: "Add files and more",
@@ -63,6 +79,34 @@ let runtimeProfileDir = config.browser.authSeedProfileDir;
 
 function authSessionName() {
   return `${config.browser.sessionPrefix}-auth`;
+}
+
+function effectiveAuthConfigPath() {
+  return typeof configLoad?.effectiveAuthConfigPath === "string" && configLoad.effectiveAuthConfigPath
+    ? configLoad.effectiveAuthConfigPath
+    : join(process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent"), "extensions", "oracle.json");
+}
+
+function authConfigRemediation() {
+  if (typeof configLoad?.remediation === "string" && configLoad.remediation) return configLoad.remediation;
+  if (typeof configLoad?.projectConfigPath === "string" && configLoad.projectConfigPath && configLoad.projectConfigExists) {
+    return (
+      `Set auth.chromeProfile / auth.chromeCookiePath in ${effectiveAuthConfigPath()}. ` +
+      `Project overrides are also read from ${configLoad.projectConfigPath}, but auth.* is loaded from ${effectiveAuthConfigPath()}.`
+    );
+  }
+  return `Set auth.chromeProfile / auth.chromeCookiePath in ${effectiveAuthConfigPath()}.`;
+}
+
+function authConfigSummary() {
+  if (typeof configLoad?.summary === "string" && configLoad.summary) return configLoad.summary;
+  const agentDirSuffix = typeof configLoad?.agentDir === "string" && configLoad.agentDir ? ` (agent dir: ${configLoad.agentDir})` : "";
+  const createSuffix = configLoad?.agentConfigExists === false ? " [create this file to override auth.*]" : "";
+  const lines = [`Effective oracle auth config: ${effectiveAuthConfigPath()}${agentDirSuffix}${createSuffix}`];
+  if (typeof configLoad?.projectConfigPath === "string" && configLoad.projectConfigPath && configLoad.projectConfigExists) {
+    lines.push(`Project oracle config also loaded: ${configLoad.projectConfigPath} (auth.* still comes from ${effectiveAuthConfigPath()}).`);
+  }
+  return lines.join("\n");
 }
 
 function sleep(ms) {
@@ -457,7 +501,7 @@ async function readSourceCookies() {
 
   if (!hasSessionToken) {
     throw new Error(
-      `No ChatGPT session-token cookies were found in ${cookieSourceLabel()}. Make sure ChatGPT is logged into that Chrome profile, or set auth.chromeProfile / auth.chromeCookiePath in ~/.pi/agent/extensions/oracle.json.`,
+      `No ChatGPT session-token cookies were found in ${cookieSourceLabel()}. Make sure ChatGPT is logged into that Chrome profile. ${authConfigRemediation()}`,
     );
   }
 
@@ -731,7 +775,7 @@ async function waitForImportedAuthReady() {
     }
     if (classification.state === "login_required") {
       await captureDiagnostics("login-required");
-      throw new Error(classification.message);
+      throw new Error(`${classification.message} ${authConfigRemediation()}`);
     }
     await sleep(config.auth.pollMs);
   }
@@ -751,6 +795,7 @@ async function run() {
       await log(
         `Config summary: session=${authSessionName()} seedProfileDir=${profilePlan.targetDir} stagingProfileDir=${profilePlan.stagingDir} executable=${config.browser.executablePath || "(default)"} source=${cookieSourceLabel()}`,
       );
+      await log(authConfigSummary());
       const cookies = await readSourceCookies();
       await prepareStagedProfile(profilePlan);
       await launchTargetBrowser();
@@ -783,7 +828,7 @@ async function run() {
 
 run().catch((error) => {
   process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\nIf needed, ensure the configured real Chrome profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
+    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\n${authConfigSummary()}\nIf needed, ensure the configured real Chrome profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
   );
   process.exit(1);
 });
