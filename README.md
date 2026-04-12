@@ -85,7 +85,7 @@ User-facing commands:
 - `/oracle-auth` — sync ChatGPT cookies from your real Chrome profile into the isolated oracle auth profile
 - `/oracle-status [job-id]` — inspect job status
 - `/oracle-cancel [job-id]` — cancel queued or active job
-- `/oracle-clean <job-id|all>` — remove temp files for terminal jobs
+- `/oracle-clean <job-id|all>` — remove temp files for terminal jobs; recently woken terminal jobs may stay retained briefly and return a retry-after hint
 
 Agent-facing tools:
 - `oracle_preflight`
@@ -147,6 +147,7 @@ Project config should only override safe, non-privileged settings.
 - Jobs can queue automatically if runtime capacity is full.
 - Completion delivery into `pi` is best-effort wake-up based.
 - If you miss the wake-up, use `oracle_read(jobId)` or `/oracle-status`.
+- `/oracle-clean` can still refuse a terminal job briefly after a wake-up send so saved response/artifact paths survive the follow-up turn; when that guard applies, it returns the next eligible cleanup time.
 
 ## Requirements
 
@@ -180,6 +181,12 @@ Project config should only override safe, non-privileged settings.
 
 - Use `/oracle-status [job-id]` or `oracle_read(jobId)`.
 - Results are still saved on disk even if the reminder turn does not land.
+
+### `/oracle-clean` refuses a terminal job right after completion
+
+- This can happen during the short post-send retention grace window after a wake-up was sent.
+- The command now returns a `Retry after ...` timestamp when that guard is active.
+- Wait until that time, then rerun `/oracle-clean [job-id|all]`.
 
 ### `agent-browser`, `tar`, or `zstd` is missing
 

@@ -160,7 +160,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
   });
 
   pi.registerCommand("oracle-clean", {
-    description: "Remove oracle temp files for a job or all project jobs",
+    description: "Remove oracle temp files for terminal jobs; recently woken jobs may stay retained briefly",
     handler: async (args, ctx: ExtensionCommandContext) => {
       const target = args.trim();
       if (!target) {
@@ -205,10 +205,10 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       }
 
       refreshOracleStatus(ctx);
-      const warningSuffix = cleanupWarnings.length > 0 ? ` Cleanup warnings:\n${cleanupWarnings.join("\n")}` : "";
+      const warningSuffix = cleanupWarnings.length > 0 ? ` Cleanup blockers/warnings:\n${cleanupWarnings.join("\n")}` : "";
       const removalSummary = removedCount === jobs.length
         ? `Removed ${removedCount} oracle job director${removedCount === 1 ? "y" : "ies"}.`
-        : `Removed ${removedCount} of ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}; retained ${jobs.length - removedCount} with cleanup warnings.`;
+        : `Removed ${removedCount} of ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}; retained ${jobs.length - removedCount} due to cleanup blockers or warnings.`;
       ctx.ui.notify(`${removalSummary}${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
     },
   });

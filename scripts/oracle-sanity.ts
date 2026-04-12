@@ -78,6 +78,7 @@ import {
   listOracleJobDirs,
   markJobNotified,
   pruneTerminalOracleJobs,
+  ORACLE_WAKEUP_POST_SEND_RETENTION_MS,
   readJob,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
@@ -1401,6 +1402,46 @@ async function testCleanupPendingRecoveryTerminatesStaleLiveWorker(config: Oracl
   }
 }
 
+async function testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const cwd = process.cwd();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-clean-grace-worker-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+
+  const cleanCommand = pi.commands.get("oracle-clean");
+  assert(cleanCommand, "oracle clean command should register for retention-grace testing");
+
+  const sessionFile = "/tmp/oracle-sanity-session-clean-retention-grace.jsonl";
+  const jobId = await createTerminalJob(config, cwd, sessionFile);
+  const job = readJob(jobId);
+  assert(job, "oracle clean retention-grace job should exist");
+  const wakeupRequestedAt = new Date(Date.now() - 30_000).toISOString();
+  const retryAfter = new Date(Date.parse(wakeupRequestedAt) + ORACLE_WAKEUP_POST_SEND_RETENTION_MS).toISOString();
+  await updateJob(job.id, (current) => ({
+    ...current,
+    wakeupAttemptCount: 1,
+    wakeupLastRequestedAt: wakeupRequestedAt,
+  }));
+
+  const ui = createUiStub();
+  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+
+  try {
+    await cleanCommand.handler(jobId, ctx);
+    assert(Boolean(readJob(jobId)), "oracle clean should not delete a terminal job during the post-send retention grace window");
+    const notice = ui.notifications.at(-1)?.message || "";
+    assert(notice.includes("post-send retention grace window"), "oracle clean should explain the hidden retention-grace cleanup blocker");
+    assert(notice.includes("Retry after") && notice.includes(retryAfter), "oracle clean should surface the next eligible cleanup time when retention grace blocks removal");
+    assert(notice.includes("cleanup blockers or warnings"), "oracle clean summary should describe retained jobs as blockers/warnings instead of only cleanup warnings");
+  } finally {
+    await cleanupJob(jobId);
+    await rm(fakeWorkerPath, { force: true });
+  }
+}
+
 async function testOracleCleanRefusesTerminalJobsWithLiveWorkers(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const cwd = process.cwd();
@@ -2478,6 +2519,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
   assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
   assert(designSource.includes("/tmp/pi-oracle-auth-*/oracle-auth.log"), "design doc should reference the per-run oracle-auth diagnostics bundle");
+  assert(designSource.includes("returns a retry-after timestamp"), "design doc should explain that oracle-clean returns a retry-after timestamp when retention grace blocks cleanup");
   assert(recoveryDrillSource.includes("/tmp/pi-oracle-auth-*/"), "recovery drill should reference the per-run oracle-auth diagnostics bundle");
   assert(!recoveryDrillSource.includes("/tmp/oracle-auth.log"), "recovery drill should not reference the old fixed oracle-auth log path");
   assert(designSource.includes("`preset` is the only model-selection parameter"), "design doc should state preset is the only selector");
@@ -2496,6 +2538,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
   assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
+  assert(readmeSource.includes("/oracle-clean <job-id|all>"), "README should document the oracle-clean command");
+  assert(readmeSource.includes("recently woken terminal jobs may stay retained briefly"), "README command summary should explain that oracle-clean can briefly retain terminal jobs after wake-up delivery");
+  assert(readmeSource.includes("returns the next eligible cleanup time"), "README should explain that oracle-clean returns a retry-after hint when post-send retention grace blocks cleanup");
+  assert(readmeSource.includes("### `/oracle-clean` refuses a terminal job right after completion"), "README troubleshooting should explain oracle-clean retention-grace refusals");
+  assert(readmeSource.includes("Retry after ..."), "README troubleshooting should mention the oracle-clean retry-after hint");
   assert(readmeSource.includes("## Available presets"), "README should document available oracle preset ids");
   assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
   assert(readmeSource.includes("human-readable preset label"), "README should mention preset label normalization");
@@ -2613,6 +2660,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("Oracle terminal cleanup is stale"), "terminal cleanup reconcile should recover live workers whose terminal cleanup heartbeat is stale");
   assert(jobsSource.includes("notification delivery is in flight"), "terminal job removal should refuse jobs with an in-flight notification claim instead of deleting around wake-up delivery");
   assert(jobsSource.includes("post-send retention grace window"), "terminal job removal should refuse recently woken jobs until their response/artifact files survive a short post-send grace window");
+  assert(jobsSource.includes("Retry after"), "terminal job removal should return the next eligible cleanup time when post-send retention grace blocks cleanup");
   assert(jobsSource.includes("Refusing to remove terminal oracle job"), "terminal job removal should refuse live terminal workers instead of deleting around them");
   assert(runtimeSource.includes("jobBlocksAdmission"), "runtime admission should delegate cleanup/worker blocking decisions to the shared job coordination helper");
   assert(runtimeSource.includes("isTrackedProcessAlive"), "runtime admission should use the shared tracked-process identity helper when evaluating live workers");
@@ -2641,6 +2689,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.overrides?.["basic-ftp"] === "^5.2.2", "package.json should override basic-ftp to a patched version");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
+  assert(commandsSource.includes("recently woken jobs may stay retained briefly"), "oracle-clean help text should mention the short post-send retention grace window");
+  assert(commandsSource.includes("cleanup blockers or warnings"), "oracle-clean summary should not mislabel retention blockers as cleanup warnings only");
   assert(commandsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel command should only promote queued jobs after a clean cancellation");
   assert(commandsSource.includes("Refusing to remove non-terminal oracle job"), "oracle clean should refuse queued jobs");
   assert(commandsSource.includes("getOracleConfigLoadDetails"), "oracle auth bootstrap should pass effective config-load metadata into the auth worker");
@@ -3793,6 +3843,7 @@ async function main() {
   await testOracleToolResultsExposeStructuredJobDetails(config);
   await testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(config);
   await testOracleToolErrorsExposeStructuredMetadata();
+  await testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config);
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
   await testStaleReconcileDoesNotOverwriteConcurrentCompletion(config);
   await testActiveCancellationDoesNotOverwriteCompletion(config);

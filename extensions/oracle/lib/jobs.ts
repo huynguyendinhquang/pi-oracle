@@ -285,6 +285,16 @@ function notificationClaimIsLive(job: Pick<OracleJob, "notifyClaimedAt" | "notif
   return now - claimedAtMs < ORACLE_NOTIFICATION_CLAIM_TTL_MS;
 }
 
+function getWakeupRetentionGraceDeadline(job: Pick<OracleJob, "wakeupLastRequestedAt">, now = Date.now()): { retryAt: string; remainingMs: number } | undefined {
+  const lastRequestedAtMs = parseTimestamp(job.wakeupLastRequestedAt);
+  if (lastRequestedAtMs === undefined) return undefined;
+  const retryAtMs = lastRequestedAtMs + ORACLE_WAKEUP_POST_SEND_RETENTION_MS;
+  return {
+    retryAt: new Date(retryAtMs).toISOString(),
+    remainingMs: Math.max(0, retryAtMs - now),
+  };
+}
+
 function wakeupRetentionGraceIsActive(job: Pick<OracleJob, "wakeupLastRequestedAt">, now = Date.now()): boolean {
   const lastRequestedAtMs = parseTimestamp(job.wakeupLastRequestedAt);
   if (lastRequestedAtMs === undefined) return false;
@@ -464,12 +474,17 @@ export async function removeTerminalOracleJob(job: OracleJob): Promise<{ removed
         },
       };
     }
-    if (wakeupRetentionGraceIsActive(current)) {
+    const nowMs = Date.now();
+    if (wakeupRetentionGraceIsActive(current, nowMs)) {
+      const graceDeadline = getWakeupRetentionGraceDeadline(current, nowMs);
+      const retryHint = graceDeadline
+        ? ` Retry after ${graceDeadline.retryAt} (${Math.ceil(graceDeadline.remainingMs / 1000)}s remaining).`
+        : "";
       return {
         removed: false,
         cleanupReport: {
           attempted: [],
-          warnings: [`Refusing to remove terminal oracle job ${current.id} because its wake-up delivery is still within the post-send retention grace window.`],
+          warnings: [`Refusing to remove terminal oracle job ${current.id} because its wake-up delivery is still within the post-send retention grace window.${retryHint}`],
         },
       };
     }

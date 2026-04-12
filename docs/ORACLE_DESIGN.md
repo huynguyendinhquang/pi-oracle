@@ -267,7 +267,7 @@ Long-run hygiene is intentionally conservative:
 
 - runtime profiles, runtime leases, and conversation leases are cleaned immediately as part of worker/command cleanup paths
 - browser close is time-bounded so cleanup can continue even if `agent-browser close` wedges
-- `/oracle-clean` performs runtime cleanup before removing the persisted job directory, but refuses terminal jobs whose worker is still live or whose wake-up was just sent inside a short post-send retention grace window
+- `/oracle-clean` performs runtime cleanup before removing the persisted job directory, but refuses terminal jobs whose worker is still live or whose wake-up was just sent inside a short post-send retention grace window; when blocked by that grace it returns a retry-after timestamp
 - stale lock directories are swept before reconcile maintenance
 - old auth `.staging-*` profiles are swept during `/oracle-auth` startup when the auth browser session is not still active
 - terminal job directories are retained for inspection, then pruned later based on configurable retention windows
