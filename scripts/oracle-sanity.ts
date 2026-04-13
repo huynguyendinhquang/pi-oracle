@@ -1284,6 +1284,26 @@ async function testWorkspaceRootFallsBackToProjectMarkersWithoutGit(): Promise<v
   }
 }
 
+async function testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-workspace-root-ancestor-git-${randomUUID()}-`));
+  const outerGitRoot = join(fixtureDir, "outer-git");
+  const projectRoot = join(outerGitRoot, "projects", "sample-app");
+  const subdirCwd = join(projectRoot, "src", "feature");
+
+  try {
+    await mkdir(join(outerGitRoot, ".git"), { recursive: true, mode: 0o700 });
+    await mkdir(subdirCwd, { recursive: true, mode: 0o700 });
+    await mkdir(join(projectRoot, ".pi"), { recursive: true, mode: 0o700 });
+    await writeFile(join(projectRoot, "AGENTS.md"), "# sample app\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(projectRoot, "README.md"), "# sample app\n", { encoding: "utf8", mode: 0o600 });
+
+    assert(getProjectId(subdirCwd) === getProjectId(projectRoot), "workspace-root detection should prefer the nearest project markers over an unrelated ancestor git root");
+    assert(resolveArchiveInputs(getProjectId(subdirCwd), ["AGENTS.md"])[0]?.relative === "AGENTS.md", "archive input resolution should stay anchored to the nearest marked project root instead of widening to an unrelated ancestor git repo");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-submit-workspace-root-${randomUUID()}-`));
@@ -2971,6 +2991,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("Oracle requires a persisted pi session"), "runtime should surface a clear error when oracle is used without a persisted session identity");
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
   assert(runtimeSource.includes("resolveWorkspaceRoot"), "runtime should derive project identity from a stable workspace root instead of the raw current working directory");
+  assert(runtimeSource.includes('"AGENTS.md"'), "runtime workspace-root detection should recognize project markers like AGENTS.md before widening to unrelated ancestor git roots");
   assert(runtimeSource.includes("Configured oracle browser executable does not exist"), "runtime submit preflight should surface missing configured browser executables clearly");
   assert(runtimeSource.includes("Oracle prerequisite not found on PATH"), "runtime submit preflight should surface missing local dependencies clearly");
   assert(runtimeSource.includes('await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles")'), "runtime submit preflight should validate runtime profile directory writability before submit");
@@ -4463,6 +4484,7 @@ async function main() {
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
   await testArchiveDefaultExclusions();
+  await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
   testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();
   await testArchiveResolutionPreservesSignificantWhitespace();

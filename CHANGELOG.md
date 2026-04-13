@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.3 - 2026-04-13
+
+### Fixed
+- workspace-root detection now prefers nearest project markers like `.pi/` and `AGENTS.md` over unrelated ancestor git roots, so oracle submissions from nested projects no longer widen to a home-directory repo and reject valid project-relative archive inputs like `AGENTS.md`
+- sanity coverage now guards the nested-project-under-ancestor-git case so archive resolution stays anchored to the intended project root
+
 ## 0.6.2 - 2026-04-13
 
 ### Changed

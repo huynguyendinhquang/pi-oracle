@@ -23,6 +23,8 @@ const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const ORACLE_SUBPROCESS_KILL_GRACE_MS = 2_000;
 const WORKSPACE_ROOT_MARKERS = [
   ".pi/extensions/oracle.json",
+  ".pi",
+  "AGENTS.md",
 ] as const;
 const REQUIRED_ORACLE_DEPENDENCIES = [
   { name: "agent-browser", command: AGENT_BROWSER_BIN },
@@ -75,8 +77,8 @@ function resolveWorkspaceRoot(realCwd: string): string {
   let current = realCwd;
   let nearestMarkerRoot: string | undefined;
   while (true) {
-    if (existsSync(join(current, ".git"))) return current;
     if (!nearestMarkerRoot && hasWorkspaceRootMarker(current)) nearestMarkerRoot = current;
+    if (existsSync(join(current, ".git"))) return nearestMarkerRoot ?? current;
     const parent = dirname(current);
     if (parent === current) return nearestMarkerRoot ?? realCwd;
     current = parent;
