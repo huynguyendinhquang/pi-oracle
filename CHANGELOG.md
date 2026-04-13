@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.2 - 2026-04-13
+
+### Changed
+- `/oracle` and `/oracle-followup` now treat pre-dispatch `archive_too_large` submit failures as retryable archive-selection misses instead of immediate dead ends, so agents can automatically narrow the archive and retry before surfacing the problem to the user
+
+### Fixed
+- archive-too-large submit errors now explain the 250 MB limit in human-readable terms, state that dispatch stopped before launch, and describe an ordered retry plan for shrinking the archive
+- oracle tool guidance, docs, and sanity coverage now align on only ending the turn after successful/queued `oracle_submit` results instead of accidentally stopping on a retryable oversize failure
+
 ## 0.6.1 - 2026-04-13
 
 ### Fixed

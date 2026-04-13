@@ -2844,11 +2844,14 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(followUpPromptSource.includes("followUpJobId"), "/oracle-followup prompt should explicitly route the parsed job id through oracle_submit.followUpJobId");
   assert(followUpPromptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle-followup prompt should prefer context-rich archives within the configured upload ceiling");
   assert(followUpPromptSource.includes("call `oracle_auth` once"), "/oracle-followup prompt should tell agents to refresh auth once before retrying a stale-auth follow-up failure");
+  assert(followUpPromptSource.includes("details.error.code === \"archive_too_large\""), "/oracle-followup prompt should explicitly recognize retryable archive_too_large submit failures");
+  assert(followUpPromptSource.includes("after at most two total `oracle_submit` attempts"), "/oracle-followup prompt should cap automatic archive-too-large retries");
   assert(followUpPromptSource.includes("nearby files, tests, docs, configs, and adjacent modules"), "/oracle-followup prompt should preserve relevant surrounding context for narrow follow-up requests");
   assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
   assert(promptSource.includes("Do not read files, search the codebase, or prepare archive inputs first"), "/oracle prompt should forbid expensive prep before preflight passes");
   assert(promptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle prompt should bias toward context-rich pre-submit context gathering within the upload ceiling");
   assert(promptSource.includes("call `oracle_auth` once"), "/oracle prompt should tell agents to refresh auth once before retrying a stale-auth failure");
+  assert(promptSource.includes("details.error.code === \"archive_too_large\""), "/oracle prompt should explicitly recognize retryable archive_too_large submit failures");
   assert(promptSource.includes("If the user scope is explicit and narrow"), "/oracle prompt should recognize explicit narrow requests before broad repo exploration");
   assert(promptSource.includes("Do not keep exploring once you already have enough context to submit well"), "/oracle prompt should bias toward dispatch once enough context is in hand");
   assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
@@ -2870,13 +2873,17 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "/oracle prompt should describe whole-repo auto-pruning when archives are still too large");
   assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "/oracle prompt should describe the source-root guard for auto-pruning");
   assert(promptSource.includes("If a submitted oracle job later fails because upload is rejected"), "/oracle prompt should describe the post-submit upload-rejection fallback ladder");
-  assert(promptSource.includes("still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning"), "/oracle prompt should distinguish submit-time oversize failures after auto-pruning");
+  assert(promptSource.includes("fails before dispatch with `details.error.code === \"archive_too_large\"` or an upload-limit message"), "/oracle prompt should distinguish retryable submit-time oversize failures from other submit-time errors");
+  assert(promptSource.includes("after at most two total `oracle_submit` attempts"), "/oracle prompt should cap automatic archive-too-large retries");
+  assert(promptSource.includes("For any other `oracle_submit` submit-time error, stop and report the error"), "/oracle prompt should still stop immediately on non-archive submit-time errors");
+  assert(promptSource.includes("After a successful or queued `oracle_submit`, end your turn"), "/oracle prompt should only end the turn after successful/queued submit results, not retryable oversize failures");
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
   assert(designSource.includes("`oracle_preflight`"), "design doc should document the oracle_preflight tool");
   assert(designSource.includes("`oracle_auth`"), "design doc should document the agent-facing oracle_auth tool");
   assert(designSource.includes("`/oracle-followup <job-id> <request>`"), "design doc should document the user-facing follow-up prompt template");
   assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
   assert(designSource.includes("bias toward context-rich archives when they fit within the 250 MB ceiling"), "design doc should describe the context-rich /oracle flow within the upload ceiling");
+  assert(designSource.includes("retryable archive-selection miss"), "design doc should explain that archive-too-large submit failures are retryable archive-selection misses");
   assert(designSource.includes("biases toward omitting `preset` and using the configured default"), "design doc should explain the default-preset bias for /oracle prompt ergonomics");
   assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
   assert(designSource.includes("/tmp/pi-oracle-auth-*/oracle-auth.log"), "design doc should reference the per-run oracle-auth diagnostics bundle");
@@ -2889,6 +2896,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
   assert(toolsSource.includes("call oracle_auth once before retrying the submission"), "oracle submit tool guidance should tell agents to refresh auth once before retrying stale-auth failures");
+  assert(toolsSource.includes("details.error.code === 'archive_too_large'"), "oracle submit tool guidance should explicitly recognize retryable archive_too_large failures");
+  assert(toolsSource.includes("retry automatically with a smaller archive"), "oracle submit tool guidance should tell agents to retry archive-too-large failures automatically");
+  assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle submit tool guidance should only stop after successful/queued submit results, not retryable oversize failures");
   assert(toolsSource.includes("Prefer context-rich archives up to the 250 MB ceiling"), "oracle tool guidance should tell agents to use the available archive budget generously when it helps");
   assert(toolsSource.includes('name: "oracle_auth"'), "oracle tools should register an agent-facing oracle_auth tool");
   assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
@@ -2905,6 +2915,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
   assert(readmeSource.includes("context-rich relevant archive up to the 250 MB ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
+  assert(readmeSource.includes("retryable archive-selection failure"), "README should explain that archive-too-large local packing failures are retryable and should auto-narrow before surfacing to the user");
   assert(readmeSource.includes("omit `preset` and use the configured default model"), "README should explain the default-preset bias for /oracle prompt ergonomics");
   assert(readmeSource.includes("Archive README.md plus any nearby docs or implementation files that help answer accurately"), "README should include a narrow /oracle example that still keeps relevant surrounding context");
   assert(readmeSource.includes("Agent preflights, then gathers a context-rich relevant repo slice"), "README high-level flow should reflect the context-rich /oracle path");
@@ -3068,6 +3079,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("post-send retention grace window"), "terminal job removal should refuse recently woken jobs until their response/artifact files survive a short post-send grace window");
   assert(jobsSource.includes("Retry after"), "terminal job removal should return the next eligible cleanup time when post-send retention grace blocks cleanup");
   assert(jobsSource.includes("Refusing to remove terminal oracle job"), "terminal job removal should refuse live terminal workers instead of deleting around them");
+  assert(jobsSource.includes("maxRetries: ORACLE_JOB_DIR_RM_MAX_RETRIES"), "terminal job removal should retry recursive job-dir deletion to stabilize transient ENOTEMPTY cleanup races");
   assert(runtimeSource.includes("jobBlocksAdmission"), "runtime admission should delegate cleanup/worker blocking decisions to the shared job coordination helper");
   assert(runtimeSource.includes("isTrackedProcessAlive"), "runtime admission should use the shared tracked-process identity helper when evaluating live workers");
   assert(sharedLifecycleSource.includes("MAX_ORACLE_JOB_LIFECYCLE_EVENTS = 64"), "shared lifecycle helpers should bound stored lifecycle breadcrumbs to keep job state durable and reviewable");
@@ -3476,6 +3488,32 @@ async function testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooL
     assert(result.autoPrunedPrefixes.some((entry) => entry.relativePath === "apps/Tiny/build"), "whole-repo archive creation should prune matching generated dirs even when they are below 4 MiB");
     assert((result.initialArchiveBytes ?? 0) >= 8 * 1024, "sub-threshold pruning test should begin over the size limit");
     assert(result.archiveBytes < 8 * 1024, "sub-threshold pruning should reduce the archive below the configured limit");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(archivePath, { force: true });
+  }
+}
+
+async function testArchiveOversizeErrorExplainsRetryPlan(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-oversize-"));
+  const archivePath = join(tmpdir(), `oracle-archive-oversize-${randomUUID()}.tar.zst`);
+  try {
+    await writeFile(join(fixtureDir, "big.bin"), randomBytes(32 * 1024));
+    await assertRejects(
+      () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
+      "archive oversize errors should explain the configured size limit and retry plan",
+      "Oracle archive exceeds ChatGPT upload limit (0.01 MiB) after default exclusions.",
+    );
+    await assertRejects(
+      () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
+      "archive oversize errors should report that submission stopped before dispatch",
+      "so submission stopped before dispatch",
+    );
+    await assertRejects(
+      () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
+      "archive oversize errors should describe the retry order for narrowing archives",
+      "Recommended retry order:",
+    );
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(archivePath, { force: true });
@@ -4432,6 +4470,7 @@ async function main() {
   await testArchiveSubprocessTimeoutKillsHungChildren();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
   await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
+  await testArchiveOversizeErrorExplainsRetryPlan();
   await testSanityRunnerIsolation();
   testDurableWorkerHandoff();
   testSharedJobCoordinationHelpers();

@@ -35,10 +35,12 @@ Rules:
 - If the request depends on git state or pending changes (for example code review, ship readiness, or release approval), create a tracked diff bundle file inside the repo (for example under `.pi/`) containing `git status` plus `git diff` output, include that file in the archive, and tell the oracle to use it because the `.git` directory is not included in oracle exports.
 - When `files=["."]` and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like `build/`, `dist/`, `out/`, `coverage/`, and `tmp/` outside obvious source roots like `src/` and `lib/` until the archive fits or no candidate remains. Successful submissions report what was pruned.
 - If a submitted oracle job later fails because upload is rejected, retry with a smaller archive in this order: (1) remove the largest obviously irrelevant/generated content, (2) if still too large, include modified files plus adjacent files plus directly relevant subtrees, (3) if still too large, explain the cut or ask the user.
+- If `oracle_submit` fails before dispatch with `details.error.code === "archive_too_large"` or an upload-limit message, that failure is retryable. Use the reported top-level size summary and any auto-pruned paths to choose a smaller archive and retry automatically.
+- For archive-too-large retries, cut scope in this order: (1) if you used `.`, remove the largest obviously irrelevant/generated/history/export/report content while preserving relevant source/docs/config/tests, (2) if it still does not fit, archive only the directly relevant subtrees plus adjacent docs/tests/config, (3) if it still does not fit after at most two total `oracle_submit` attempts, report what you cut and why.
 - Prefer the configured default (omit **`preset`**) unless the task clearly needs a different model or the user explicitly asked for one; then choose a canonical **`preset`** id.
-- If `oracle_submit` itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error. Do not retry automatically.
+- For any other `oracle_submit` submit-time error, stop and report the error. Do not retry automatically.
 - If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success and end your turn exactly the same way.
-- After oracle_submit returns, end your turn. Do not keep working while the oracle runs.
+- After a successful or queued `oracle_submit`, end your turn. Do not keep working while the oracle runs. If `oracle_submit` failed with a retryable archive-too-large error, shrink the archive and retry first.
 
 User request:
 $@

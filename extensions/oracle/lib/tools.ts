@@ -338,14 +338,15 @@ function formatArchiveOversizeError(args: {
   const topLevel = summarizeTopLevelIncludedPaths(args.entrySizes);
   const adaptiveCandidates = summarizeAdaptivePruneCandidates(args.entrySizes, args.adaptivePruneMinBytes).slice(0, 7);
   return [
-    `Oracle archive exceeds ChatGPT upload limit after default exclusions${args.autoPrunedPrefixes.length > 0 ? " and automatic generic generated-output-dir pruning" : ""}: ${args.archiveBytes} bytes >= ${args.maxBytes} bytes`,
+    `Oracle archive exceeds ChatGPT upload limit (${formatBytes(args.maxBytes)}) after default exclusions${args.autoPrunedPrefixes.length > 0 ? " and automatic generic generated-output-dir pruning" : ""}.`,
+    `The local archive measured ${formatBytes(args.archiveBytes)} (${args.archiveBytes} bytes), so submission stopped before dispatch.`,
     args.autoPrunedPrefixes.length > 0 ? "Automatically pruned generic generated-output paths before failing:" : undefined,
     ...args.autoPrunedPrefixes.map((entry) => `- ${formatDirectoryLabel(entry.relativePath)} — ${formatBytes(entry.bytes)}`),
     topLevel.length > 0 ? "Approx top-level included sizes:" : undefined,
     ...topLevel.map((entry) => `- ${entry.relativePath} — ${formatBytes(entry.bytes)}`),
     adaptiveCandidates.length > 0 ? "Largest remaining generic generated-output-dir candidates:" : undefined,
     ...adaptiveCandidates.map((entry) => `- ${formatDirectoryLabel(entry.relativePath)} — ${formatBytes(entry.bytes)}`),
-    "Retry with narrower archive inputs, starting with modified files plus adjacent files plus directly relevant subtrees.",
+    "Recommended retry order: (1) remove the largest obviously irrelevant/generated/history/export content, (2) if it still does not fit, keep only the directly relevant subtrees plus adjacent docs/tests/config, (3) if it still does not fit, explain what was cut before asking the user.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -878,7 +879,7 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     return {
       code: "archive_too_large",
       message,
-      suggestedNextStep: "Retry with a narrower archive, starting with modified files plus adjacent files plus directly relevant subtrees.",
+      suggestedNextStep: "This failure is retryable. Retry automatically with fewer selected files: first remove the largest obviously irrelevant/generated/history/export content, then if needed narrow to the directly relevant subtrees plus adjacent docs/tests/config, and if it still does not fit explain what was cut before asking the user.",
     };
   }
 
@@ -1072,9 +1073,12 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       "Do not default to a one-file archive for a single function, file, or stack trace if the relevant surrounding context still fits comfortably within the limit.",
       "When files='.' and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like build/, dist/, out/, coverage/, and tmp/ outside obvious source roots like src/ and lib/ until the archive fits or no candidate remains; successful submissions report what was pruned.",
       "If a submitted oracle job later fails because upload is rejected, retry smaller: remove the largest obviously irrelevant/generated content first, then narrow to modified files plus adjacent files plus directly relevant subtrees, then explain the cut or ask the user if still needed.",
-      "If oracle_submit itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error instead of retrying automatically.",
+      "If oracle_submit fails before dispatch with details.error.code === 'archive_too_large' or an upload-limit message, treat that as retryable and retry automatically with a smaller archive.",
+      "For archive_too_large retries, use the reported top-level size summary and any auto-pruned paths to decide what to cut: first remove the largest obviously irrelevant/generated/history/export content, then if needed narrow to the directly relevant subtrees plus adjacent docs/tests/config.",
+      "Do not loop forever: stop after at most two total oracle_submit attempts for the same request, and if it still does not fit explain what was cut and why.",
+      "For any other submit-time error, stop and report the error instead of retrying automatically.",
       "If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success and stop exactly the same way.",
-      "Stop after dispatching oracle_submit; do not continue the task while the oracle job is running.",
+      "After a successful or queued oracle_submit, stop; do not continue the task while the oracle job is running. If oracle_submit failed with retryable archive_too_large, narrow the archive and retry first.",
       "Use `preset` as the only model-selection parameter on oracle_submit. Canonical ids are preferred, and matching human-readable preset labels are normalized automatically. Omit preset to use the configured default.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,

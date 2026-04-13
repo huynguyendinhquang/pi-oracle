@@ -54,6 +54,8 @@ The `/oracle` prompt now runs an early oracle preflight before it gathers repo c
 
 For explicitly narrow requests, `/oracle` should still prefer a context-rich relevant archive up to the 250 MB ceiling, including nearby tests, docs, config, and adjacent modules when that can improve answer quality. Reserve tightly minimal archives for an explicit user request for a tight archive, privacy-sensitive material, or size-constrained cases. It should also omit `preset` and use the configured default model unless the task clearly needs a different one.
 
+If a local archive still exceeds the 250 MB limit after default exclusions and automatic whole-repo pruning, the agent should treat that as a retryable archive-selection failure: shrink the archive automatically, retry with a smaller relevant slice, and explain what it cut only if it still cannot fit after the allowed retry budget.
+
 If you miss the wake-up, the result is still saved durably in the oracle job directory and can be read later.
 
 ## Example requests

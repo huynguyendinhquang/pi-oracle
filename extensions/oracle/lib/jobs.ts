@@ -43,6 +43,8 @@ export const ORACLE_NOTIFICATION_CLAIM_TTL_MS = 60_000;
 export const ORACLE_WAKEUP_MAX_ATTEMPTS = 3;
 export const ORACLE_WAKEUP_RETRY_DELAYS_MS = [0, 15_000, 60_000] as const;
 export const ORACLE_WAKEUP_POST_SEND_RETENTION_MS = 2 * 60 * 1000;
+const ORACLE_JOB_DIR_RM_MAX_RETRIES = 5;
+const ORACLE_JOB_DIR_RM_RETRY_DELAY_MS = 50;
 const ORACLE_COMPLETE_JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const ORACLE_FAILED_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
@@ -507,7 +509,12 @@ export async function removeTerminalOracleJob(job: OracleJob): Promise<{ removed
       }));
       return { removed: false, cleanupReport };
     }
-    await rm(getJobDir(current.id), { recursive: true, force: true });
+    await rm(getJobDir(current.id), {
+      recursive: true,
+      force: true,
+      maxRetries: ORACLE_JOB_DIR_RM_MAX_RETRIES,
+      retryDelay: ORACLE_JOB_DIR_RM_RETRY_DELAY_MS,
+    });
     return { removed: true, cleanupReport };
   });
 }

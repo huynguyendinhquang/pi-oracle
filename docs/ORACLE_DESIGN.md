@@ -115,9 +115,11 @@ Instead it instructs the agent to:
 5. gather enough repo context to submit well and bias toward context-rich archives when they fit within the 250 MB ceiling
 6. if the request is narrow, start from the directly relevant area but still include nearby tests, docs, config, and adjacent modules when they may improve answer quality
 7. if the request is broad/repo-wide, gather broader context and usually archive `.`
-8. craft the oracle prompt
-9. call `oracle_submit`
-10. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
+8. if `oracle_submit` fails before dispatch with an `archive_too_large` / upload-limit error, treat that as retryable: use the reported size summary plus any auto-pruned paths to cut scope and retry automatically with a smaller archive
+9. stop retrying after at most two total submit attempts for the same request; if it still does not fit, report what was cut and why
+10. craft the oracle prompt
+11. call `oracle_submit`
+12. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
 
 ### `/oracle-auth`
 
@@ -148,7 +150,7 @@ The authenticated seed profile remains the source of truth for future oracle run
 
 ### `oracle_submit`
 
-Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting `preset` and using the configured default unless the task clearly needs a different model or the user explicitly asked for one. It also biases toward context-rich archives up to the 250 MB ceiling, narrowing only when the user explicitly asks for a tight archive, privacy/sensitivity requires it, or size pressure forces it.
+Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting `preset` and using the configured default unless the task clearly needs a different model or the user explicitly asked for one. It also biases toward context-rich archives up to the 250 MB ceiling, narrowing only when the user explicitly asks for a tight archive, privacy/sensitivity requires it, or size pressure forces it. When local archive creation still exceeds that ceiling after default exclusions and whole-repo auto-pruning, prompt guidance now treats the failure as a retryable archive-selection miss rather than a terminal dead end: agents should cut scope automatically, retry once or twice, and only surface the cut decisions if the archive still cannot fit.
 
 1. resolve the preset (submit-time or config default) into an execution snapshot
 2. resolve optional `followUpJobId` into a prior `chatUrl` and `conversationId`
