@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `/oracle` now follows a stricter preflight-first flow, biases toward context-rich archive selection up to the 250 MB ceiling, and prefers the configured default model unless a different preset is clearly needed
+
+### Fixed
+- `/oracle` no-session and missing-seed flows now stop before unnecessary repo exploration, and prompt-template guidance keeps relevant surrounding archive context instead of over-optimizing for minimal slices when extra context still fits
+
 ## 0.5.0 - 2026-04-12
 
 ### Added

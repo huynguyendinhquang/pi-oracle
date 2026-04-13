@@ -52,7 +52,7 @@ pi install https://github.com/fitchmultz/pi-oracle
 
 The `/oracle` prompt now runs an early oracle preflight before it gathers repo context, so missing persisted-session or local auth/config blockers fail before the agent spends time reading files.
 
-For explicitly narrow requests, `/oracle` should gather only minimal context and prefer a minimal archive instead of broad repo exploration. It should also omit `preset` and use the configured default model unless the task clearly needs a different one.
+For explicitly narrow requests, `/oracle` should still prefer a context-rich relevant archive up to the 250 MB ceiling, including nearby tests, docs, config, and adjacent modules when that can improve answer quality. Reserve tightly minimal archives for an explicit user request for a tight archive, privacy-sensitive material, or size-constrained cases. It should also omit `preset` and use the configured default model unless the task clearly needs a different one.
 
 If you miss the wake-up, the result is still saved durably in the oracle job directory and can be read later.
 
@@ -67,11 +67,11 @@ If you miss the wake-up, the result is still saved durably in the oracle job dir
 ```
 
 ```text
-/oracle Explain the README guidance for /oracle-clean retention grace. Only archive README.md unless another file is clearly necessary.
+/oracle Explain the README guidance for /oracle-clean retention grace. Archive README.md plus any nearby docs or implementation files that help answer accurately.
 ```
 
 ```text
-/oracle-followup <job-id> Tighten the migration plan around rollback risk, and only archive the files needed to answer that follow-up.
+/oracle-followup <job-id> Tighten the migration plan around rollback risk, and include the most relevant surrounding files/docs as long as the archive stays comfortably within the limit.
 ```
 
 After a job finishes, use `/oracle-followup <job-id> <request>` to continue the same ChatGPT thread without hand-writing the low-level `followUpJobId` tool parameter.
@@ -80,7 +80,7 @@ After a job finishes, use `/oracle-followup <job-id> <request>` to continue the 
 
 ```mermaid
 flowchart LR
-    A["/oracle request"] --> B["Agent preflights, then gathers only the needed repo context"]
+    A["/oracle request"] --> B["Agent preflights, then gathers a context-rich relevant repo slice"]
     B --> C["oracle_submit builds archive"]
     C --> D["Detached worker starts isolated ChatGPT runtime"]
     D --> E["Archive + prompt sent to ChatGPT.com"]

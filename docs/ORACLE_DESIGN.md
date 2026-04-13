@@ -109,8 +109,8 @@ Instead it instructs the agent to:
 1. call `oracle_preflight` immediately
 2. stop right away if preflight reports the session or local oracle setup is not ready
 3. understand whether the request is explicitly narrow or genuinely broad
-4. gather only the smallest repo context needed to submit well
-5. if the request is narrow, prefer a minimal targeted archive and dispatch as soon as enough context is in hand
+4. gather enough repo context to submit well and bias toward context-rich archives when they fit within the 250 MB ceiling
+5. if the request is narrow, start from the directly relevant area but still include nearby tests, docs, config, and adjacent modules when they may improve answer quality
 6. if the request is broad/repo-wide, gather broader context and usually archive `.`
 7. craft the oracle prompt
 8. call `oracle_submit`
@@ -145,7 +145,7 @@ The authenticated seed profile remains the source of truth for future oracle run
 
 ### `oracle_submit`
 
-Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting `preset` and using the configured default unless the task clearly needs a different model or the user explicitly asked for one.
+Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting `preset` and using the configured default unless the task clearly needs a different model or the user explicitly asked for one. It also biases toward context-rich archives up to the 250 MB ceiling, narrowing only when the user explicitly asks for a tight archive, privacy/sensitivity requires it, or size pressure forces it.
 
 1. resolve the preset (submit-time or config default) into an execution snapshot
 2. resolve optional `followUpJobId` into a prior `chatUrl` and `conversationId`

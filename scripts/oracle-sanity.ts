@@ -2802,9 +2802,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(followUpPromptSource.includes("Call `oracle_preflight` immediately"), "/oracle-followup prompt should require an immediate oracle_preflight guard");
   assert(followUpPromptSource.includes("Usage: /oracle-followup <job-id> <request>"), "/oracle-followup prompt should document the required usage contract for job id plus follow-up request");
   assert(followUpPromptSource.includes("followUpJobId"), "/oracle-followup prompt should explicitly route the parsed job id through oracle_submit.followUpJobId");
+  assert(followUpPromptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle-followup prompt should prefer context-rich archives within the configured upload ceiling");
+  assert(followUpPromptSource.includes("nearby files, tests, docs, configs, and adjacent modules"), "/oracle-followup prompt should preserve relevant surrounding context for narrow follow-up requests");
   assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
   assert(promptSource.includes("Do not read files, search the codebase, or prepare archive inputs first"), "/oracle prompt should forbid expensive prep before preflight passes");
-  assert(promptSource.includes("Gather only the smallest repo context needed"), "/oracle prompt should bias toward minimal pre-submit context gathering");
+  assert(promptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle prompt should bias toward context-rich pre-submit context gathering within the upload ceiling");
   assert(promptSource.includes("If the user scope is explicit and narrow"), "/oracle prompt should recognize explicit narrow requests before broad repo exploration");
   assert(promptSource.includes("Do not keep exploring once you already have enough context to submit well"), "/oracle prompt should bias toward dispatch once enough context is in hand");
   assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
@@ -2817,10 +2819,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!promptSource.includes(presetId), `/oracle prompt should not hard-code preset id ${presetId}`);
   }
+  assert(promptSource.includes("prefer context-rich archives up to the 250 MB ceiling"), "/oracle prompt should tell agents to use the available archive budget generously when it improves answer quality");
   assert(promptSource.includes("include the whole repository by passing `.`"), "/oracle prompt should default to whole-repo archive selection");
   assert(promptSource.includes("obvious credentials/private data"), "/oracle prompt should mention default exclusion of obvious credentials/private data");
   assert(promptSource.includes("nested `secrets/` directories anywhere in the repo"), "/oracle prompt should exclude nested secrets directories by default");
-  assert(promptSource.includes("For very targeted asks like reviewing one function, one file, one stack trace"), "/oracle prompt should preserve and strengthen the targeted-scope exception");
+  assert(promptSource.includes("Do not default to a one-file archive just because the user mentioned one file"), "/oracle prompt should preserve surrounding context even for targeted asks when the archive budget allows it");
   assert(promptSource.includes("the `.git` directory is not included in oracle exports"), "/oracle prompt should tell review/ship-readiness requests to create and include a git diff bundle file");
   assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "/oracle prompt should describe whole-repo auto-pruning when archives are still too large");
   assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "/oracle prompt should describe the source-root guard for auto-pruning");
@@ -2830,7 +2833,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(designSource.includes("`oracle_preflight`"), "design doc should document the oracle_preflight tool");
   assert(designSource.includes("`/oracle-followup <job-id> <request>`"), "design doc should document the user-facing follow-up prompt template");
   assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
-  assert(designSource.includes("gather only the smallest repo context needed"), "design doc should describe the minimal-context /oracle flow for narrow requests");
+  assert(designSource.includes("bias toward context-rich archives when they fit within the 250 MB ceiling"), "design doc should describe the context-rich /oracle flow within the upload ceiling");
   assert(designSource.includes("biases toward omitting `preset` and using the configured default"), "design doc should explain the default-preset bias for /oracle prompt ergonomics");
   assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
   assert(designSource.includes("/tmp/pi-oracle-auth-*/oracle-auth.log"), "design doc should reference the per-run oracle-auth diagnostics bundle");
@@ -2842,7 +2845,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
+  assert(toolsSource.includes("Prefer context-rich archives up to the 250 MB ceiling"), "oracle tool guidance should tell agents to use the available archive budget generously when it helps");
   assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
+  assert(toolsSource.includes("Do not default to a one-file archive"), "oracle tool guidance should preserve surrounding context for narrowly described asks when the archive budget allows it");
   assert(toolsSource.includes("resolveOracleSubmitPreset"), "oracle submit should resolve preset via config helper");
   assert(toolsSource.includes("coerceOracleSubmitPresetId"), "oracle submit should normalize preset label aliases before resolving the canonical preset id");
   assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS registry"), "oracle submit tool description should point preset discovery to the canonical registry");
@@ -2854,10 +2859,10 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("/oracle-followup <job-id> <request>"), "README should document the user-facing same-thread follow-up command shape");
   assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
-  assert(readmeSource.includes("For explicitly narrow requests, `/oracle` should gather only minimal context"), "README should explain the minimal-context bias for narrow /oracle requests");
+  assert(readmeSource.includes("context-rich relevant archive up to the 250 MB ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
   assert(readmeSource.includes("omit `preset` and use the configured default model"), "README should explain the default-preset bias for /oracle prompt ergonomics");
-  assert(readmeSource.includes("Only archive README.md unless another file is clearly necessary"), "README should include a narrow /oracle example that biases toward minimal archive scope");
-  assert(readmeSource.includes("Agent preflights, then gathers only the needed repo context"), "README high-level flow should reflect the minimal-context /oracle path");
+  assert(readmeSource.includes("Archive README.md plus any nearby docs or implementation files that help answer accurately"), "README should include a narrow /oracle example that still keeps relevant surrounding context");
+  assert(readmeSource.includes("Agent preflights, then gathers a context-rich relevant repo slice"), "README high-level flow should reflect the context-rich /oracle path");
   assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
   assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
   assert(!readmeSource.includes("/oracle-cancel [job-id]"), "README should no longer imply that oracle-cancel guesses a latest-job default");

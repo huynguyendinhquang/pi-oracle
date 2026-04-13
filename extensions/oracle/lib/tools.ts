@@ -1021,9 +1021,10 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     promptSnippet: "Dispatch a background ChatGPT web oracle job after gathering repo context.",
     promptGuidelines: [
       "Gather context before calling oracle_submit.",
-      "By default, archive the whole repo by passing '.'; default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like .env files, key material, credential dotfiles, local database files, and nested secrets directories anywhere in the repo.",
-      "Only narrow file selection when the user explicitly asks, the task is clearly scoped smaller, or privacy/sensitivity requires it.",
-      "For very targeted asks like a single function or stack trace, a smaller archive is preferable.",
+      "Prefer context-rich archives up to the 250 MB ceiling because more relevant surrounding context is usually better than less.",
+      "By default, archive the whole repo by passing '.' for broad or unclear requests; default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like .env files, key material, credential dotfiles, local database files, and nested secrets directories anywhere in the repo.",
+      "For narrower asks, still include nearby tests, docs, configs, and adjacent modules when they may improve answer quality. Only narrow aggressively when the user explicitly asks, privacy/sensitivity requires it, or size pressure forces it.",
+      "Do not default to a one-file archive for a single function, file, or stack trace if the relevant surrounding context still fits comfortably within the limit.",
       "When files='.' and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like build/, dist/, out/, coverage/, and tmp/ outside obvious source roots like src/ and lib/ until the archive fits or no candidate remains; successful submissions report what was pruned.",
       "If a submitted oracle job later fails because upload is rejected, retry smaller: remove the largest obviously irrelevant/generated content first, then narrow to modified files plus adjacent files plus directly relevant subtrees, then explain the cut or ask the user if still needed.",
       "If oracle_submit itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error instead of retrying automatically.",

@@ -12,8 +12,8 @@ Required workflow:
 4. If the request does not include both a prior oracle job id and a follow-up request, stop and report: `Usage: /oracle-followup <job-id> <request>. Find the job id in the earlier oracle response or via /oracle-status.`
 5. Treat the parsed job id as `followUpJobId` for `oracle_submit`.
 6. Understand whether the follow-up request is explicitly narrow or genuinely broad.
-7. Gather only the smallest repo context needed to choose archive inputs and write a strong oracle prompt.
-8. If the follow-up request is explicit and narrow, prefer a minimal targeted read/search set and dispatch as soon as you have enough context. Do not broaden into repo-wide exploration unless the narrow pass proves insufficient.
+7. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the 250 MB archive ceiling.
+8. If the follow-up request is explicit and narrow, start from the directly relevant area but still include nearby files, tests, docs, configs, and adjacent modules when they may improve answer quality. Keep the archive tightly minimal only when the user explicitly asks for that, privacy/sensitivity requires it, or size pressure forces it.
 9. If the follow-up request is broad, architectural, release-oriented, or otherwise repo-wide, gather broader context and usually archive `.`.
 10. Choose archive inputs for the follow-up oracle job.
 11. Craft a concise but complete follow-up prompt for ChatGPT web.
@@ -31,9 +31,9 @@ Rules:
 - Use `oracle_preflight` before any expensive `/oracle-followup` preparation so missing persisted-session or local auth/config blockers fail fast.
 - This prompt exists so normal users can continue the same ChatGPT thread without manually constructing `followUpJobId` tool calls.
 - Always include an archive. Do not submit without context files.
-- By default, include the whole repository by passing `.` when the follow-up request is genuinely broad, repo-wide, or unclear after a quick narrow pass. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
-- Only limit file selection if the request is clearly scoped smaller, if the user explicitly narrows the scope, or if privacy/sensitivity requires it.
-- For very targeted follow-ups like clarifying one function, one file, one stack trace, or one narrow question, start with the smallest obviously sufficient archive and expand only if that first pass proves insufficient.
+- By default, prefer context-rich archives up to the 250 MB ceiling because more relevant context is usually better than less. For broad or unclear follow-up requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
+- Only limit file selection if the user explicitly requests a tight archive, if privacy/sensitivity requires it, or if the archive would otherwise exceed the size limit after exclusions/pruning.
+- For targeted follow-ups, still include directly related surrounding files, tests, docs, configs, and adjacent modules when they may improve answer quality. Do not default to a one-file archive just because the user mentioned one file, one function, or one stack trace.
 - Do not keep exploring once you already have enough context to submit well.
 - If the request depends on git state or pending changes (for example code review, ship readiness, or release approval), create a tracked diff bundle file inside the repo (for example under `.pi/`) containing `git status` plus `git diff` output, include that file in the archive, and tell the oracle to use it because the `.git` directory is not included in oracle exports.
 - When `files=["."]` and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like `build/`, `dist/`, `out/`, `coverage/`, and `tmp/` outside obvious source roots like `src/` and `lib/` until the archive fits or no candidate remains. Successful submissions report what was pruned.
