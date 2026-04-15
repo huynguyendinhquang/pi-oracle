@@ -1286,6 +1286,20 @@ async function testPollerWakeupRetriesStayBoundedWithoutDurableNotifications(con
   await cleanupJob(jobId);
 }
 
+async function testPollerIgnoresAdmissionLockTimeout(): Promise<void> {
+  await resetOracleStateDir();
+  const sessionManager = createPersistedSessionManager("poller-admission-lock-timeout");
+  const pi = createPiHarness();
+  let promotionAttempts = 0;
+  await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(sessionManager), "/tmp/fake-oracle-worker.mjs", {
+    promoteQueuedJobsFn: async () => {
+      promotionAttempts += 1;
+      throw new Error("Timed out waiting for oracle admission lock: global");
+    },
+  });
+  assert(promotionAttempts === 1, "poller should attempt queued promotion once per scan before tolerating admission-lock timeouts");
+}
+
 export async function runPollerSanitySuite(config: OracleConfig): Promise<void> {
   await testNotificationClaims(config);
   await testMarkJobNotifiedRejectsStaleClaimant(config);
@@ -1315,4 +1329,5 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testPostSendWakeupGraceBlocksPrune(config);
   await testOracleCleanHonorsPostSendWakeupGrace(config);
   await testPollerWakeupRetriesStayBoundedWithoutDurableNotifications(config);
+  await testPollerIgnoresAdmissionLockTimeout();
 }

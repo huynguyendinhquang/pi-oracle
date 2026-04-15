@@ -57,6 +57,7 @@ export interface OraclePollerHooks {
 
 export interface OraclePollerOptions {
   hooks?: OraclePollerHooks;
+  promoteQueuedJobsFn?: typeof promoteQueuedJobs;
 }
 
 export function getPollerSessionKey(sessionFile: string | undefined, cwd: string): string {
@@ -165,7 +166,8 @@ function requestWakeupTurn(pi: ExtensionAPI, job: OraclePollerJob): void {
   );
 }
 
-async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string, hooks: OraclePollerHooks = {}): Promise<void> {
+async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string, options: OraclePollerOptions = {}): Promise<void> {
+  const hooks = options.hooks ?? {};
   const currentSessionFile = getSessionFile(ctx);
   const pollerKey = getPollerSessionKey(currentSessionFile, ctx.cwd);
   const notificationClaimant = `${pollerKey}:${process.pid}`;
@@ -175,6 +177,7 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
   const processStartedAt = readProcessStartedAt(process.pid);
   const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(pollerKey, process.pid, processStartedAt || "unknown");
   const resolveLiveWakeupTargets = hooks.collectLiveWakeupTargets ?? collectLiveWakeupTargets;
+  const promoteQueuedJobsFn = options.promoteQueuedJobsFn ?? promoteQueuedJobs;
   await writeLeaseMetadata(WAKEUP_TARGET_LEASE_KIND, wakeupTargetLeaseKey, {
     leaseKey: wakeupTargetLeaseKey,
     projectId,
@@ -197,7 +200,11 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
     if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
   }
 
-  await promoteQueuedJobs({ workerPath, source: "poller" });
+  try {
+    await promoteQueuedJobsFn({ workerPath, source: "poller" });
+  } catch (error) {
+    if (!isLockTimeoutError(error, "admission", "global")) throw error;
+  }
 
   const terminalJobs = listOracleJobDirs()
     .map((jobDir) => readJob(jobDir))
@@ -265,7 +272,7 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
 }
 
 export async function scanOracleJobsOnce(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string, options: OraclePollerOptions = {}): Promise<void> {
-  await scan(pi, ctx, workerPath, options.hooks);
+  await scan(pi, ctx, workerPath, options);
 }
 
 export function startPoller(pi: ExtensionAPI, ctx: ExtensionContext, intervalMs: number, workerPath: string, options: OraclePollerOptions = {}): void {
