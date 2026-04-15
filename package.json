@@ -16,12 +16,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fitchmultz/pi-oracle.git"
+    "url": "git+https://github.com/huynguyendinhquang/pi-oracle.git"
   },
   "bugs": {
-    "url": "https://github.com/fitchmultz/pi-oracle/issues"
+    "url": "https://github.com/huynguyendinhquang/pi-oracle/issues"
   },
-  "homepage": "https://github.com/fitchmultz/pi-oracle#readme",
+  "homepage": "https://github.com/huynguyendinhquang/pi-oracle#readme",
   "publishConfig": {
     "access": "public"
   },
@@ -72,8 +72,10 @@
   },
   "engines": {
     "node": ">=22"
-  },
+  }
+,
   "os": [
-    "darwin"
+    "darwin",
+    "linux"
   ]
 }

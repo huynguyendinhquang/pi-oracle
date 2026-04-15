@@ -16,7 +16,7 @@ import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAu
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
 const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
 const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || DEFAULT_ORACLE_JOBS_DIR;
-const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
+const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser", "/usr/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;

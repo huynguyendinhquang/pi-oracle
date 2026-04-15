@@ -5,8 +5,9 @@
 // Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { release, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
@@ -243,8 +244,20 @@ const IN_FLIGHT_LOCK_PUBLISHER_SCRIPT = [
   'await rename(tempPath, finalPath);',
 ].join("\n");
 
+function readLinuxProcessStartToken(pid: number | undefined): string | undefined {
+  if (!pid || pid <= 0) return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.indexOf(") ") + 2).split(" ");
+    return fields[19] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function readProcessStartedAt(pid: number | undefined): string | undefined {
   if (!pid || pid <= 0) return undefined;
+  if (process.platform === "linux") return readLinuxProcessStartToken(pid);
   try {
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return startedAt || undefined;
@@ -815,6 +828,7 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     },
     auth: {
       ...config.auth,
+      bootstrapTimeoutMs: 500,
       chromeCookiePath: join(fixtureDir, "missing-cookies.sqlite"),
     },
   };
@@ -2816,6 +2830,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const locksSource = await readFile(new URL("../extensions/oracle/lib/locks.ts", import.meta.url), "utf8");
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
+  const configSource = await readFile(new URL("../extensions/oracle/lib/config.ts", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
@@ -3111,6 +3126,10 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!runtimeSource.includes("Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0"), "runtime admission should not treat cleanup warnings alone as live capacity blockers");
   assert(!runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should not retain leases solely because teardown leaves warnings");
   assert(runtimeSource.includes("await releaseConversationLease(runtime.conversationId)"), "runtime cleanup should always attempt to release conversation leases");
+  if (process.platform === "linux") {
+    assert(configSource.includes("--disable-ipv6"), "WSL/Linux defaults should be able to disable IPv6 when running under WSL to avoid ChatGPT reachability failures");
+  assert(configSource.includes('runMode: defaultBrowserRunMode()'), "oracle config should derive the default browser run mode from platform-aware defaults instead of hardcoding headless");
+  }
   assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
   assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
@@ -3120,7 +3139,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
   assert(pkg.engines?.node === ">=22", "package.json should advertise the actual Node.js support floor");
-  assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
+  assert(Array.isArray(pkg.os) && pkg.os.includes("darwin") && pkg.os.includes("linux"), "package.json should declare both macOS and Linux support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
@@ -3164,6 +3183,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('if (["complete", "failed", "cancelled"].includes(String(latest.status || ""))) return latest;'), "cleanup-driven promotion failure should mark killed jobs terminal even if they advanced beyond submitted");
   assert(workerSource.includes("spawnDetachedNodeProcess"), "cleanup-driven worker promotion should capture worker start time through the shared detached-process helper");
   assert(!workerSource.includes("workerStartedAt: undefined"), "cleanup-driven worker promotion should not drop worker start time metadata");
+  assert(sharedProcessSource.includes("readLinuxProcessStartToken"), "shared process helpers should use a dedicated Linux /proc start token reader for stable worker identity");
+  assert(sharedProcessSource.includes('if (process.platform === "linux") return readLinuxProcessStartToken(pid);'), "shared process helpers should prefer /proc process identity on Linux/WSL instead of ps lstart");
   assert(sharedJobCoordinationSource.includes("if (job.workerPid) return true;"), "worker-side durable handoff checks should require a persisted pid");
   assert(!sharedJobCoordinationSource.includes('if (job.status === "waiting") return true;'), "worker-side durable handoff checks should not trust phase alone without a persisted pid");
   assert(sharedLifecycleSource.includes("transitionOracleJobPhase"), "worker/extension lifecycle changes should flow through the shared lifecycle transition helper");
@@ -3191,6 +3212,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
   assert(authBootstrapSource.includes("Effective oracle auth config:"), "auth bootstrap failures should report the effective auth config path for the active agent dir");
   assert(!authBootstrapSource.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap should not hardcode the default global config path in user-facing remediation guidance");
+  assert(!authBootstrapSource.includes("Keychain"), "auth bootstrap should not mention macOS Keychain in user-facing guidance");
+  assert(authBootstrapSource.toLowerCase().includes("manual") && authBootstrapSource.toLowerCase().includes("login"), "auth bootstrap should include a manual-login fallback path");
   assert(stateLocksSource.includes("state-coordination-helpers.mjs"), "worker state-lock wrappers should delegate to the shared state coordination helper module");
   assert(sharedStateSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "shared worker state-lock helper should use a bounded grace before reclaiming metadata-less state dirs");
   assert(sharedStateSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "shared worker state-lock helper should use a longer grace for in-flight .tmp-* dirs under concurrent sweep");
@@ -3215,6 +3238,18 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("if (cleanupWarnings.length === 0)"), "worker should only auto-promote queued jobs after a clean runtime teardown");
   assert(workerSource.includes("Skipping queued promotion because runtime cleanup left"), "worker should log when cleanup warnings block auto-promotion");
   assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
+  assert(workerSource.includes("recoverChatCompletionAfterDisconnect"), "worker should include a dedicated recovery path for browser disconnects while awaiting response");
+  assert(workerSource.includes("Browser disconnected while awaiting response; attempting recovery"), "worker should log bounded response recovery attempts after browser disconnects");
+  assert(workerSource.includes("RESPONSE_DISCONNECT_RECOVERY_ATTEMPTS = 2"), "worker should bound browser-disconnect response recovery attempts");
+  assert(workerSource.includes("shouldRetryBrowserLaunchHeaded"), "worker should recognize retriable Linux headless-launch failures");
+  assert(workerSource.includes("Headless browser launch failed on Linux; retrying headed mode"), "worker should log Linux headed-launch fallback when headless startup fails");
+  assert(workerSource.includes("CHALLENGE_RECOVERY_TIMEOUT_MS = 60_000"), "worker should give challenge recovery a bounded manual-completion window");
+  assert(workerSource.includes("Challenge page detected in headless runtime; reopening headed mode for recovery"), "worker should retry challenge pages in headed mode on Linux/WSL before failing");
+  assert(!workerSource.includes('await launchBrowser(job, targetUrl);\n        await captureDiagnostics(job, "challenge-headed-reopen")'), "worker should not immediately relaunch the same challenge URL in default mode after switching to headed recovery");
+  assert(workerSource.includes("Challenge page detected; waiting up to"), "worker should log the bounded wait for manual challenge completion");
+  assert(workerSource.includes("preserveRuntimeError"), "worker should preserve the isolated runtime for manual challenge recovery when the challenge does not clear");
+  assert(workerSource.includes("The isolated oracle browser was left open on runtime session"), "worker should tell the user how to resume from a preserved challenge browser");
+  assert(workerSource.includes("Oracle runtime cleanup was skipped so the isolated challenge browser stays open for manual recovery"), "worker should retain challenge runtimes intentionally instead of silently tearing them down");
   assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
   assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
@@ -3589,7 +3624,12 @@ async function testSharedProcessHelpers(): Promise<void> {
     const child = await spawnDetachedNodeProcess(scriptPath, []);
     assert(typeof child.pid === "number" && child.pid > 0, "shared process helpers should return a detached child pid");
     assert(typeof child.startedAt === "string" && child.startedAt.length > 0, "shared process helpers should capture a stable process start identity");
+    if (process.platform === "linux") {
+      assert(child.startedAt === readLinuxProcessStartToken(child.pid), "shared process helpers should use the stable /proc start token on Linux/WSL");
+    }
     assert(isTrackedProcessAlive(child.pid, child.startedAt), "shared process helpers should recognize a newly spawned tracked process as alive");
+    await sleep(1_200);
+    assert(isTrackedProcessAlive(child.pid, child.startedAt), "shared process helpers should keep matching the same live process identity across repeated reads");
     const terminated = await terminateTrackedProcess(child.pid, child.startedAt, { termGraceMs: 1_000, killGraceMs: 1_000 });
     assert(terminated, "shared process helpers should terminate tracked detached processes");
     await sleep(200);
@@ -4425,6 +4465,18 @@ async function testPollerHostSafety(): Promise<void> {
 async function main() {
   await ensureNoActiveJobs();
   assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
+  if (process.platform === "linux") {
+    assert(DEFAULT_CONFIG.browser.cloneStrategy === "copy", "Linux oracle default clone strategy should use copy");
+  }
+  if (process.platform === "darwin") {
+    assert(DEFAULT_CONFIG.browser.cloneStrategy === "apfs-clone", "macOS oracle default clone strategy should keep apfs-clone");
+  }
+  const runningInWsl = process.platform === "linux" && (release().toLowerCase().includes("microsoft") || Boolean(process.env.WSL_DISTRO_NAME) || Boolean(process.env.WSL_INTEROP));
+  if (runningInWsl) {
+    assert(DEFAULT_CONFIG.browser.runMode === "headed", "WSL oracle default run mode should prefer headed Chrome to reduce Cloudflare/login churn");
+  } else {
+    assert(DEFAULT_CONFIG.browser.runMode === "headless", "non-WSL oracle default run mode should remain headless unless explicitly configured otherwise");
+  }
   const config: OracleConfig = {
     ...DEFAULT_CONFIG,
     browser: { ...DEFAULT_CONFIG.browser, maxConcurrentJobs: 1 },

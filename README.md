@@ -11,7 +11,7 @@ Use it when you want:
 
 Normal oracle jobs run in an isolated browser profile, not your active Chrome window.
 
-> Status: experimental public beta. Validated primarily on macOS with Google Chrome and `pi` 0.65.0+.
+> Status: experimental public beta. This fork is intended to work on macOS and WSL/Linux with Google Chrome and `pi` 0.65.0+.
 
 ## When to use it
 
@@ -37,16 +37,16 @@ pi install npm:pi-oracle
 GitHub:
 
 ```bash
-pi install https://github.com/fitchmultz/pi-oracle
+pi install https://github.com/huynguyendinhquang/pi-oracle
 ```
 
 ## Quickstart
 
 1. Start a normal persisted `pi` session. Do not use `pi --no-session` for oracle.
-2. Make sure ChatGPT already works in your local Chrome profile.
+2. Make sure ChatGPT already works in your local Chrome profile. On WSL, use Google Chrome inside WSL rather than Windows Chrome.
 3. Make sure these are installed: Google Chrome, `agent-browser`, `tar`, and `zstd`.
 4. Optional: create `~/.pi/agent/extensions/oracle.json` if you want non-default settings.
-5. Run `/oracle-auth`.
+5. Run `/oracle-auth`. If cookie import is unavailable, it can fall back to a one-time manual login in the isolated oracle auth browser.
 6. Run `/oracle Review the current pending changes. Include the whole repo unless a narrower archive is clearly better.`
 7. Wait for a best-effort wake-up, or check `/oracle-status`.
 
@@ -97,7 +97,7 @@ If concurrency is full, the job is queued and starts automatically later.
 User-facing commands:
 - `/oracle <request>` — prompt template that tells the agent to gather context and dispatch an oracle job
 - `/oracle-followup <job-id> <request>` — prompt template that continues an earlier oracle job in the same ChatGPT thread
-- `/oracle-auth` — sync ChatGPT cookies from your real Chrome profile into the isolated oracle auth profile
+- `/oracle-auth` — sync ChatGPT cookies from your configured Chrome profile into the isolated oracle auth profile, with a manual-login fallback when cookie import is unavailable
 - `/oracle-read [job-id]` — inspect job status plus the saved response preview
 - `/oracle-status [job-id]` — inspect job status and list recent job ids when no explicit id is given
 - `/oracle-cancel <job-id>` — cancel a queued or active job by id
@@ -171,7 +171,7 @@ Project config should only override safe, non-privileged settings.
 
 ## Requirements
 
-- macOS
+- macOS or WSL/Linux
 - Node.js 22 or newer
 - Google Chrome installed
 - ChatGPT already signed into a local Chrome profile
@@ -185,13 +185,14 @@ Project config should only override safe, non-privileged settings.
 
 - Make sure ChatGPT works in the same local Chrome profile you configured.
 - Re-run `/oracle-auth`.
+- If cookie import is unavailable, complete the one-time manual login in the isolated auth browser when it opens.
 - If ChatGPT is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
 
 ### You hit a challenge / verification page
 
-- Solve it in the auth/bootstrap browser if prompted.
+- Solve it in the headed oracle browser if prompted.
+- On WSL, oracle now defaults to headed Chrome to reduce Cloudflare/login churn; leave that browser open long enough to finish any visible challenge.
 - Then re-run `/oracle-auth` before submitting jobs again.
-
 ### You see "Oracle requires a persisted pi session"
 
 - Do not run oracle from `pi --no-session`.

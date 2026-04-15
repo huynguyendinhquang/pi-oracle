@@ -1,8 +1,8 @@
-// Purpose: Bootstrap isolated oracle browser auth by importing real Chrome cookies and validating ChatGPT session readiness.
-// Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, and persist diagnostics for auth failures.
+// Purpose: Bootstrap isolated oracle browser auth by importing configured Chrome cookies or capturing a manual login into the seed profile.
+// Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, support manual-login fallback, and persist diagnostics for auth failures.
 // Scope: Auth bootstrap worker only; long-running oracle job execution stays in run-job.mjs and shared lifecycle/state helpers stay elsewhere.
 // Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
-// Invariants/Assumptions: Runs against a local macOS Chrome profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
+// Invariants/Assumptions: Runs against a configured local Chrome profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -56,11 +56,15 @@ let URL_PATH = "(oracle-auth url path unavailable)";
 let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
 let BODY_PATH = "(oracle-auth body path unavailable)";
 let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
-const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
+const REAL_CHROME_USER_DATA_DIR = process.platform === "darwin"
+  ? resolve(homedir(), "Library", "Application Support", "Google", "Chrome")
+  : process.platform === "linux"
+    ? resolve(homedir(), ".config", "google-chrome")
+    : undefined;
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
+const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser", "/usr/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
 
@@ -160,6 +164,11 @@ function spawnCommand(command, args, options = {}) {
     }
     if (options.input) child.stdin.end(options.input);
     else child.stdin.end();
+    child.stdin.on("error", (error) => {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") return;
+      stderr += error instanceof Error ? `\n${error.message}` : `\n${String(error)}`;
+    });
     child.stdout.on("data", (data) => {
       stdout += String(data);
     });
@@ -266,7 +275,7 @@ async function createProfilePlan(profileDir) {
   if (targetDir === "/" || targetDir === homedir()) {
     throw new Error(`Oracle profileDir is unsafe: ${targetDir}`);
   }
-  if (targetDir === REAL_CHROME_USER_DATA_DIR || targetDir.startsWith(`${REAL_CHROME_USER_DATA_DIR}/`)) {
+  if (REAL_CHROME_USER_DATA_DIR && (targetDir === REAL_CHROME_USER_DATA_DIR || targetDir.startsWith(`${REAL_CHROME_USER_DATA_DIR}/`))) {
     throw new Error(`Oracle profileDir must not point into the real Chrome user-data directory: ${targetDir}`);
   }
 
@@ -468,16 +477,39 @@ function cookieSourceLabel() {
     : `Chrome profile ${config.auth.chromeProfile}`;
 }
 
+function markCookieImportUnavailable(error) {
+  if (error && typeof error === "object") {
+    try {
+      error.cookieImportUnavailable = true;
+    } catch {
+      // ignore non-extensible error objects; fallback marker is best-effort
+    }
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  wrapped.cookieImportUnavailable = true;
+  return wrapped;
+}
 async function readSourceCookies() {
   await log(`Reading ChatGPT cookies from ${cookieSourceLabel()}`);
-  const { cookies, warnings } = await getCookies({
-    url: config.browser.chatUrl,
-    origins: cookieOrigins(),
-    browsers: ["chrome"],
-    mode: "merge",
-    chromeProfile: cookieSource(),
-    timeoutMs: 5_000,
-  });
+  let cookies = [];
+  let warnings = [];
+  try {
+    ({ cookies, warnings } = await getCookies({
+      url: config.browser.chatUrl,
+      origins: cookieOrigins(),
+      browsers: ["chrome"],
+      mode: "merge",
+      chromeProfile: cookieSource(),
+      timeoutMs: 5_000,
+    }));
+  } catch (error) {
+    throw markCookieImportUnavailable(
+      new Error(
+        `Failed to import ChatGPT cookies from ${cookieSourceLabel()}: ${error instanceof Error ? error.message : String(error)}. ${authConfigRemediation()}`,
+),
+    );
+  }
 
   if (warnings.length) {
     await log(`sweet-cookie warnings: ${warnings.join(" | ")}`);
@@ -500,8 +532,10 @@ async function readSourceCookies() {
   await log(`Cookie presence: sessionToken=${hasSessionToken} account=${hasAccountCookie}`);
 
   if (!hasSessionToken) {
-    throw new Error(
-      `No ChatGPT session-token cookies were found in ${cookieSourceLabel()}. Make sure ChatGPT is logged into that Chrome profile. ${authConfigRemediation()}`,
+    throw markCookieImportUnavailable(
+      new Error(
+        `No ChatGPT session-token cookies were found in ${cookieSourceLabel()}. Make sure ChatGPT is logged into that Chrome profile. ${authConfigRemediation()}`,
+),
     );
   }
 
@@ -711,7 +745,11 @@ function preserveBrowserError(message) {
   return error;
 }
 
-async function waitForImportedAuthReady() {
+function isCookieImportUnavailable(error) {
+  return Boolean(error && typeof error === "object" && error.cookieImportUnavailable === true);
+}
+
+async function waitForAuthReady(mode) {
   const startedAt = Date.now();
   const timeoutAt = startedAt + config.auth.bootstrapTimeoutMs;
   let retriedOutage = false;
@@ -727,8 +765,8 @@ async function waitForImportedAuthReady() {
     await writeFile(BODY_PATH, `${body}\n`, { mode: 0o600 }).catch(() => undefined);
     const classification = classifyChatPage({ url, snapshot, body, probe });
     await log(
-      `poll ${iteration}: url=${JSON.stringify(url)} probe=${JSON.stringify(probe)} classification=${classification.state} hasComposer=${snapshot.includes(`textbox \"${CHATGPT_LABELS.composer}\"`)} hasAddFiles=${snapshot.includes(`button \"${CHATGPT_LABELS.addFiles}\"`)}`,
-    );
+      `poll ${iteration}: mode=${mode} url=${JSON.stringify(url)} probe=${JSON.stringify(probe)} classification=${classification.state} hasComposer=${snapshot.includes(`textbox \"${CHATGPT_LABELS.composer}\"`)} hasAddFiles=${snapshot.includes(`button \"${CHATGPT_LABELS.addFiles}\"`)}`,
+);
     if (classification.state === "authenticated_and_ready") return classification;
     if (classification.state === "auth_transitioning") {
       const elapsedMs = Date.now() - startedAt;
@@ -756,8 +794,8 @@ async function waitForImportedAuthReady() {
         continue;
       }
       if (elapsedMs >= 20_000) {
-        await captureDiagnostics("auth-transition-timeout");
-        throw new Error(`ChatGPT accepted the session cookies but never left the public-looking homepage. Inspect ${LOG_PATH}.`);
+        await captureDiagnostics(mode === "manual" ? "manual-auth-transition-timeout" : "auth-transition-timeout");
+        throw new Error(`ChatGPT accepted auth but never left the public-looking homepage. Inspect ${LOG_PATH}.`);
       }
       await sleep(config.auth.pollMs);
       continue;
@@ -770,17 +808,60 @@ async function waitForImportedAuthReady() {
       continue;
     }
     if (classification.state === "challenge_blocking") {
-      await captureDiagnostics("challenge");
+      await captureDiagnostics(mode === "manual" ? "manual-challenge" : "challenge");
+      if (mode === "manual") {
+        await log("Manual login is on a challenge page; waiting for the user to finish it in the isolated oracle auth browser");
+        await sleep(config.auth.pollMs);
+        continue;
+      }
       throw preserveBrowserError(classification.message);
     }
     if (classification.state === "login_required") {
+      if (mode === "manual") {
+        if (iteration === 1) {
+          await log("Waiting for manual login in the isolated oracle auth browser");
+        }
+        await sleep(config.auth.pollMs);
+        continue;
+      }
       await captureDiagnostics("login-required");
       throw new Error(`${classification.message} ${authConfigRemediation()}`);
     }
     await sleep(config.auth.pollMs);
   }
-  await captureDiagnostics("timeout");
+  await captureDiagnostics(mode === "manual" ? "manual-login-timeout" : "timeout");
+  if (mode === "manual") {
+    throw new Error(`Timed out waiting for manual login in the isolated oracle auth browser. Logs: ${LOG_PATH}`);
+  }
   throw new Error(`Timed out verifying synced ChatGPT cookies in the isolated oracle profile. Logs: ${LOG_PATH}`);
+}
+
+async function waitForImportedAuthReady() {
+  return waitForAuthReady("imported");
+}
+
+async function waitForManualAuthReady() {
+  return waitForAuthReady("manual");
+}
+
+async function attemptImportedAuthBootstrap(profilePlan) {
+  const cookies = await readSourceCookies();
+  await prepareStagedProfile(profilePlan);
+  await launchTargetBrowser();
+  const appliedCount = await seedCookiesIntoTarget(cookies);
+  await log(`Cookie seeding complete: applied=${appliedCount}`);
+  await openUrl(config.browser.chatUrl, config.browser.chatUrl);
+  const classification = await waitForImportedAuthReady();
+  return { appliedCount, classification, usedManualLogin: false };
+}
+
+async function attemptManualLoginBootstrap(profilePlan) {
+  await log("Starting manual login fallback in the isolated oracle auth browser");
+  await prepareStagedProfile(profilePlan);
+  await launchTargetBrowser();
+  await openUrl(config.browser.authUrl, config.browser.authUrl);
+  const classification = await waitForManualAuthReady();
+  return { appliedCount: 0, classification, usedManualLogin: true };
 }
 
 async function run() {
@@ -794,15 +875,18 @@ async function run() {
       await log(`Starting oracle auth bootstrap`);
       await log(
         `Config summary: session=${authSessionName()} seedProfileDir=${profilePlan.targetDir} stagingProfileDir=${profilePlan.stagingDir} executable=${config.browser.executablePath || "(default)"} source=${cookieSourceLabel()}`,
-      );
+);
       await log(authConfigSummary());
-      const cookies = await readSourceCookies();
-      await prepareStagedProfile(profilePlan);
-      await launchTargetBrowser();
-      const appliedCount = await seedCookiesIntoTarget(cookies);
-      await log(`Cookie seeding complete: applied=${appliedCount}`);
-      await openUrl(config.browser.chatUrl, config.browser.chatUrl);
-      const classification = await waitForImportedAuthReady();
+      let bootstrapResult;
+      try {
+        bootstrapResult = await attemptImportedAuthBootstrap(profilePlan);
+      } catch (error) {
+        if (!isCookieImportUnavailable(error)) throw error;
+        await log(`Imported auth bootstrap attempt failed: ${error instanceof Error ? error.message : String(error)}`);
+        await closeTargetBrowser().catch(() => undefined);
+        bootstrapResult = await attemptManualLoginBootstrap(profilePlan);
+      }
+      const { appliedCount, classification, usedManualLogin } = bootstrapResult;
       await log(`Auth bootstrap success: ${classification.message}`);
       await closeTargetBrowser();
       await commitStagedProfile(profilePlan);
@@ -810,7 +894,9 @@ async function run() {
       await writeFile(join(profilePlan.targetDir, ".oracle-seed-generation"), `${generation}\n`, { encoding: "utf8", mode: 0o600 });
       committedProfile = true;
       process.stdout.write(
-        `${classification.message} Synced ${appliedCount} cookies into ${profilePlan.targetDir}. Diagnostics: ${DIAGNOSTICS_DIR}`,
+        usedManualLogin
+          ? `${classification.message} Saved manual-login auth seed profile in ${profilePlan.targetDir}. Diagnostics: ${DIAGNOSTICS_DIR}`
+          : `${classification.message} Synced ${appliedCount} cookies into ${profilePlan.targetDir}. Diagnostics: ${DIAGNOSTICS_DIR}`,
       );
     } catch (error) {
       shouldPreserveBrowser = Boolean(error && typeof error === "object" && error.preserveBrowser === true);
@@ -828,7 +914,7 @@ async function run() {
 
 run().catch((error) => {
   process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\n${authConfigSummary()}\nIf needed, ensure the configured real Chrome profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
+    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\n${authConfigSummary()}\nIf cookie import is unavailable, rerun /oracle-auth and complete login in the isolated oracle auth browser when the manual fallback opens.`,
   );
   process.exit(1);
 });

@@ -6,6 +6,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,8 +130,20 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function readLinuxProcessStartToken(pid: number | undefined): string | undefined {
+  if (!pid || pid <= 0) return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.indexOf(") ") + 2).split(" ");
+    return fields[19] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function readProcessStartedAt(pid: number | undefined): string | undefined {
   if (!pid || pid <= 0) return undefined;
+  if (process.platform === "linux") return readLinuxProcessStartToken(pid);
   try {
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return startedAt || undefined;

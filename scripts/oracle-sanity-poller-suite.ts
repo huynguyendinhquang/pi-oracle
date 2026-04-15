@@ -634,7 +634,7 @@ async function testPollerDoesNotStealNotificationFromLiveSessionTarget(config: O
   holder.unref();
   const holderPid = holder.pid;
   assert(holderPid !== undefined, "live-target holder should expose a pid");
-  const holderStartedAt = readProcessStartedAt(holderPid);
+  const holderStartedAt = await waitForProcessStartedAtValue(holderPid);
   const wakeupTargetLeaseKey = `${job.projectId}::${job.sessionId}::${holderPid}::${holderStartedAt || "unknown"}`;
   await writeLeaseMetadata("wakeup-target", wakeupTargetLeaseKey, {
     leaseKey: wakeupTargetLeaseKey,

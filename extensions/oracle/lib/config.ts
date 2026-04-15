@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Preset ids remain the canonical model-selection contract and config loading must fail clearly on invalid user overrides.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, release } from "node:os";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import { getProjectId } from "./runtime.js";
@@ -184,8 +184,11 @@ export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
 const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
+const CURRENT_PLATFORM = process.platform;
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const DEFAULT_LINUX_CHROME_EXECUTABLE_CANDIDATES = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"] as const;
 const DEFAULT_MAC_CHROME_USER_DATA_DIR = join(homedir(), "Library", "Application Support", "Google", "Chrome");
+const DEFAULT_LINUX_CHROME_USER_DATA_DIR = join(homedir(), ".config", "google-chrome");
 
 export interface OracleConfig {
   defaults: {
@@ -226,24 +229,60 @@ export interface OracleConfig {
   };
 }
 
+function defaultChromeExecutableCandidates(): readonly string[] {
+  if (CURRENT_PLATFORM === "darwin") return [DEFAULT_MAC_CHROME_EXECUTABLE];
+  if (CURRENT_PLATFORM === "linux") return DEFAULT_LINUX_CHROME_EXECUTABLE_CANDIDATES;
+  return [];
+}
+
+function defaultChromeUserDataDir(): string | undefined {
+  if (CURRENT_PLATFORM === "darwin") return DEFAULT_MAC_CHROME_USER_DATA_DIR;
+  if (CURRENT_PLATFORM === "linux") return DEFAULT_LINUX_CHROME_USER_DATA_DIR;
+  return undefined;
+}
+
+function defaultCloneStrategy(): OracleCloneStrategy {
+  return CURRENT_PLATFORM === "darwin" ? "apfs-clone" : "copy";
+}
+
+function isRunningInWsl(): boolean {
+  if (CURRENT_PLATFORM !== "linux") return false;
+  const osRelease = release().toLowerCase();
+  return osRelease.includes("microsoft") || Boolean(process.env.WSL_DISTRO_NAME) || Boolean(process.env.WSL_INTEROP);
+}
+
+function defaultBrowserArgs(): string[] {
+  const args = ["--disable-blink-features=AutomationControlled"];
+  if (isRunningInWsl()) args.push("--disable-ipv6");
+  return args;
+}
+
+function defaultBrowserRunMode(): OracleBrowserRunMode {
+  return isRunningInWsl() ? "headed" : "headless";
+}
+
 function detectDefaultChromeExecutablePath(): string | undefined {
-  return existsSync(DEFAULT_MAC_CHROME_EXECUTABLE) ? DEFAULT_MAC_CHROME_EXECUTABLE : undefined;
+  return defaultChromeExecutableCandidates().find((candidate) => existsSync(candidate));
 }
 
 function detectDefaultChromeUserAgent(executablePath: string | undefined): string | undefined {
   if (!executablePath) return undefined;
+  const platformSegment = CURRENT_PLATFORM === "darwin" ? "Macintosh; Intel Mac OS X 10_15_7" : CURRENT_PLATFORM === "linux" ? "X11; Linux x86_64" : undefined;
+  if (!platformSegment) return undefined;
   try {
     const versionOutput = execFileSync(executablePath, ["--version"], { encoding: "utf8" }).trim();
     const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+\.\d+)/);
     if (!versionMatch) return undefined;
-    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
+    return `Mozilla/5.0 (${platformSegment}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
   } catch {
     return undefined;
   }
 }
 
 function detectDefaultChromeProfileName(): string {
-  const localStatePath = join(DEFAULT_MAC_CHROME_USER_DATA_DIR, "Local State");
+  const userDataDir = defaultChromeUserDataDir();
+  if (!userDataDir) return "Default";
+  const localStatePath = join(userDataDir, "Local State");
   if (!existsSync(localStatePath)) return "Default";
   try {
     const localState = JSON.parse(readFileSync(localStatePath, "utf8")) as { profile?: { last_used?: string } };
@@ -258,6 +297,7 @@ const detectedChromeExecutablePath = detectDefaultChromeExecutablePath();
 const detectedChromeUserAgent = detectDefaultChromeUserAgent(detectedChromeExecutablePath);
 const agentExtensionsDir = join(getAgentDir(), "extensions");
 const detectedChromeProfileName = detectDefaultChromeProfileName();
+const detectedChromeUserDataDir = defaultChromeUserDataDir();
 
 export interface OracleConfigLoadDetails {
   agentDir: string;
@@ -317,13 +357,13 @@ export const DEFAULT_CONFIG: OracleConfig = {
     authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
     runtimeProfilesDir: join(agentExtensionsDir, "oracle-runtime-profiles"),
     maxConcurrentJobs: 2,
-    cloneStrategy: "apfs-clone",
+    cloneStrategy: defaultCloneStrategy(),
     chatUrl: "https://chatgpt.com/",
     authUrl: "https://chatgpt.com/auth/login",
-    runMode: "headless",
+    runMode: defaultBrowserRunMode(),
     executablePath: detectedChromeExecutablePath,
     userAgent: detectedChromeUserAgent,
-    args: ["--disable-blink-features=AutomationControlled"],
+    args: defaultBrowserArgs(),
   },
   auth: {
     pollMs: 1000,
@@ -405,7 +445,7 @@ function expectSafeProfilePath(pathValue: string, path: string): string {
   if (pathValue === "/" || pathValue === homedir()) {
     throw new Error(`Invalid oracle config: ${path} points to an unsafe directory`);
   }
-  if (pathValue === DEFAULT_MAC_CHROME_USER_DATA_DIR || pathValue.startsWith(`${DEFAULT_MAC_CHROME_USER_DATA_DIR}/`)) {
+  if (detectedChromeUserDataDir && (pathValue === detectedChromeUserDataDir || pathValue.startsWith(`${detectedChromeUserDataDir}/`))) {
     throw new Error(`Invalid oracle config: ${path} must not point into the real Chrome user-data directory`);
   }
   return pathValue;
