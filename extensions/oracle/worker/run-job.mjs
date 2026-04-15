@@ -779,6 +779,23 @@ async function clickLabeledEntry(job, label, options = {}) {
   return entry;
 }
 
+async function clickModelFamilyControlViaDom(job, family) {
+  const result = await evalPage(job, toJsonScript(`
+    const prefixes = { instant: "Instant ", thinking: "Thinking ", pro: "Pro " };
+    const prefix = prefixes["${family}"];
+    if (!prefix) return { found: false };
+    const controls = Array.from(document.querySelectorAll('button,[role="radio"],[role="menuitemradio"],[role="button"]'));
+    const target = controls.find((element) => {
+      const text = (element.innerText || element.getAttribute("aria-label") || element.textContent || "").replace(/\s+/g, " ").trim();
+      return text === prefix.trim() || text.startsWith(prefix);
+    });
+    if (!target) return { found: false };
+    target.click();
+    const text = (target.innerText || target.getAttribute("aria-label") || target.textContent || "").replace(/\s+/g, " ").trim();
+    return { found: true, text };
+  `));
+  return result && typeof result === "object" && result.found === true;
+}
 async function maybeClickLabeledEntry(job, label, options = {}) {
   const snapshot = await snapshotText(job);
   const entry = (options.last ? findLastEntry : findEntry)(
@@ -1158,7 +1175,12 @@ async function configureModel(job) {
   if (alreadyConfiguredInUi) {
     await log("Model configuration UI opened with requested settings already selected");
   } else if (!familyEntry) {
-    throw new Error(`Could not find model family control for ${job.selection.modelFamily}`);
+    const clickedViaDom = await clickModelFamilyControlViaDom(job, job.selection.modelFamily);
+    if (!clickedViaDom) throw new Error(`Could not find model family control for ${job.selection.modelFamily}`);
+    await agentBrowser(job, "wait", "800");
+    familySnapshot = await snapshotText(job);
+    verificationSnapshot = familySnapshot;
+    familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
   }
 
   if (!alreadyConfiguredInUi && familyEntry) {
