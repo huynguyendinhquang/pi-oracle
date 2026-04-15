@@ -2,9 +2,10 @@
 // Responsibilities: Read stable process start identities, detect liveness, wait for freshly spawned processes, and terminate tracked processes safely.
 // Scope: Local process coordination only; job-state mutation and queue semantics stay in higher-level helpers.
 // Usage: Imported by lib/jobs.ts, lib/runtime.ts, worker/run-job.mjs, and shared state helpers.
-// Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
+// Invariants/Assumptions: Process identity must stay stable across repeated reads; Linux/WSL uses /proc start tokens while macOS keeps ps-based lstart values to defend against PID reuse.
 
 import { spawn, execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 /** @typedef {import("./process-helpers.d.mts").OracleTrackedProcessOptions} OracleTrackedProcessOptions */
 /** @typedef {import("./process-helpers.d.mts").OracleDetachedProcessHandle} OracleDetachedProcessHandle */
@@ -13,12 +14,24 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function readLinuxProcessStartToken(pid) {
+  if (!pid || pid <= 0) return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.indexOf(") ") + 2).split(" ");
+    return fields[19] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * @param {number | undefined} pid
  * @returns {string | undefined}
  */
 export function readProcessStartedAt(pid) {
   if (!pid || pid <= 0) return undefined;
+  if (process.platform === "linux") return readLinuxProcessStartToken(pid);
   try {
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return startedAt || undefined;

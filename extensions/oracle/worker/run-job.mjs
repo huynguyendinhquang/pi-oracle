@@ -69,12 +69,15 @@ const MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS = 20_000;
 const MODEL_CONFIGURATION_SETTLE_POLL_MS = 250;
 const MODEL_CONFIGURATION_CLOSE_RETRY_MS = 1_000;
 const POST_SEND_SETTLE_MS = 15_000;
-const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
+const RESPONSE_DISCONNECT_RECOVERY_ATTEMPTS = 2;
+const CHALLENGE_RECOVERY_TIMEOUT_MS = 60_000;
+const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser", "/usr/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
 
 let currentJob;
 let browserStarted = false;
+let currentBrowserMode;
 let cleaningUpBrowser = false;
 let cleaningUpRuntime = false;
 let shuttingDown = false;
@@ -232,6 +235,12 @@ function spawnCommand(command, args, options = {}) {
       reject(error);
     });
   });
+}
+
+function preserveRuntimeError(message) {
+  const error = new Error(message);
+  error.preserveRuntime = true;
+  return error;
 }
 
 function parseConversationId(chatUrl) {
@@ -468,15 +477,32 @@ async function closeBrowser(job) {
     }
   } finally {
     browserStarted = false;
+    currentBrowserMode = undefined;
     cleaningUpBrowser = false;
   }
 }
-
-async function launchBrowser(job, url) {
+async function launchBrowser(job, url, modeOverride = undefined) {
   await closeBrowser(job);
-  const mode = job.config.browser.runMode;
-  await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]);
+  const configuredMode = modeOverride || job.config.browser.runMode;
+  try {
+    await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job, { withLaunchOptions: true, mode: configuredMode }), "open", url]);
+    currentBrowserMode = configuredMode;
+  } catch (error) {
+    if (!shouldRetryBrowserLaunchHeaded(job, error)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    await log(`Headless browser launch failed on Linux; retrying headed mode: ${message}`);
+    await closeBrowser(job).catch(() => undefined);
+    await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job, { withLaunchOptions: true, mode: "headed" }), "open", url]);
+    currentBrowserMode = "headed";
+  }
   browserStarted = true;
+}
+
+function shouldRetryBrowserLaunchHeaded(job, error) {
+  if (process.platform !== "linux") return false;
+  if (job.config.browser.runMode !== "headless") return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Resource temporarily unavailable") || message.includes("Session with given id not found") || message.includes("Could not configure browser");
 }
 
 async function streamStatus(job) {
@@ -571,6 +597,30 @@ async function snapshotText(job) {
 async function pageText(job) {
   const { stdout } = await agentBrowser(job, "get", "text", "body", { allowFailure: true });
   return stdout || "";
+}
+
+function isBrowserDisconnectedError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("The isolated oracle browser disconnected during the job.");
+}
+
+async function recoverChatCompletionAfterDisconnect(job, baselineAssistantCount, originalError) {
+  const targetUrl = job.chatUrl || stripQuery(await currentUrl(job).catch(() => "")) || job.config.browser.chatUrl;
+  let lastError = originalError;
+  for (let attempt = 1; attempt <= RESPONSE_DISCONNECT_RECOVERY_ATTEMPTS; attempt += 1) {
+    try {
+      await log(`Browser disconnected while awaiting response; attempting recovery ${attempt}/${RESPONSE_DISCONNECT_RECOVERY_ATTEMPTS} via ${targetUrl}`);
+      await launchBrowser(job, targetUrl);
+      await agentBrowser(job, "wait", "1500").catch(() => undefined);
+      return await waitForChatCompletion(job, baselineAssistantCount);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      await log(`Response recovery attempt ${attempt} failed: ${message}`);
+      if (!isBrowserDisconnectedError(error)) throw error;
+    }
+  }
+  throw lastError;
 }
 
 function toAsyncJsonScript(expression) {
@@ -841,9 +891,11 @@ async function captureDiagnostics(job, reason) {
 
 async function waitForOracleReady(job) {
   const startedAt = Date.now();
-  const timeoutAt = startedAt + 30_000;
+  let timeoutAt = startedAt + 30_000;
   let retriedOutage = false;
   let retriedAuthTransition = false;
+  let challengeDeadline = 0;
+  let loggedChallengeWait = false;
 
   while (Date.now() < timeoutAt) {
     const [url, snapshot, body, probe] = await Promise.all([
@@ -874,6 +926,33 @@ async function waitForOracleReady(job) {
       await agentBrowser(job, "reload").catch(() => undefined);
       await sleep(1500);
       continue;
+    }
+    if (classification.state === "challenge_blocking") {
+      const targetUrl = url || job.chatUrl || job.config.browser.chatUrl;
+      if (process.platform === "linux" && currentBrowserMode !== "headed") {
+        await log(`Challenge page detected in headless runtime; reopening headed mode for recovery: ${targetUrl}`);
+        await launchBrowser(job, targetUrl, "headed");
+        await captureDiagnostics(job, "challenge-headed-reopen");
+        challengeDeadline = Date.now() + CHALLENGE_RECOVERY_TIMEOUT_MS;
+        timeoutAt = Math.max(timeoutAt, challengeDeadline);
+        loggedChallengeWait = false;
+        await sleep(1000);
+        continue;
+      }
+      if (!challengeDeadline) {
+        challengeDeadline = Date.now() + CHALLENGE_RECOVERY_TIMEOUT_MS;
+        timeoutAt = Math.max(timeoutAt, challengeDeadline);
+      }
+      if (!loggedChallengeWait) {
+        await log(`Challenge page detected; waiting up to ${CHALLENGE_RECOVERY_TIMEOUT_MS}ms for the user to complete it in the isolated oracle browser`);
+        loggedChallengeWait = true;
+      }
+      if (Date.now() < challengeDeadline) {
+        await sleep(1000);
+        continue;
+      }
+      await captureDiagnostics(job, "challenge-timeout");
+      throw preserveRuntimeError(`ChatGPT is showing a challenge/verification page. The isolated oracle browser was left open on runtime session ${job.runtimeSessionName} using profile ${job.runtimeProfileDir}. Complete the challenge there, then rerun /oracle-auth and retry the oracle job. Use /oracle-clean ${job.id} after you are done if retained runtime cleanup is still needed.`);
     }
     if (classification.state !== "unknown") {
       await captureDiagnostics(job, "preflight");
@@ -1674,7 +1753,13 @@ async function run() {
       patch: { chatUrl, conversationId, heartbeatAt: new Date().toISOString() },
     }));
 
-    const completion = await waitForChatCompletion(currentJob, baselineAssistantCount);
+    let completion;
+    try {
+      completion = await waitForChatCompletion(currentJob, baselineAssistantCount);
+    } catch (error) {
+      if (!isBrowserDisconnectedError(error)) throw error;
+      completion = await recoverChatCompletionAfterDisconnect(currentJob, baselineAssistantCount, error);
+    }
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "extracting_response", {
       at: new Date().toISOString(),
       source: "oracle:worker",
@@ -1726,8 +1811,17 @@ async function run() {
     }
   } finally {
     let cleanupWarnings = [];
+    const preserveRuntime = Boolean(
+      currentJob && typeof currentJob.error === "string" && currentJob.error.includes("The isolated oracle browser was left open on runtime session"),
+    );
     try {
-      cleanupWarnings = await cleanupRuntime(currentJob);
+      if (preserveRuntime) {
+        const warning = `Oracle runtime cleanup was skipped so the isolated challenge browser stays open for manual recovery on session ${currentJob.runtimeSessionName}. Run /oracle-clean ${currentJob.id} after you finish the challenge.`;
+        cleanupWarnings = [warning];
+        await log(warning).catch(() => undefined);
+      } else {
+        cleanupWarnings = await cleanupRuntime(currentJob);
+      }
     } catch (error) {
       cleanupWarnings = [`Runtime cleanup failed before queued promotion: ${error instanceof Error ? error.message : String(error)}`];
       await log(cleanupWarnings[0]).catch(() => undefined);
