@@ -3406,6 +3406,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('["button", "radio", "menuitemradio"].includes(candidate.kind || "")'), "worker should accept radio-style model family controls in addition to button controls");
   assert(workerSource.includes('["button", "switch"].includes(candidate.kind || "")'), "worker should treat the auto-switch control as a switch in the current ChatGPT configure modal");
   assert(workerSource.includes("Could not find model family control"), "worker should describe missing family selectors generically instead of assuming button-only controls");
+  assert(workerSource.includes('if (probe?.domLoginCta) {'), "worker readiness checks should refuse public login CTA shells instead of proceeding to model selection");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");

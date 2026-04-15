@@ -856,7 +856,7 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   }
 
   if (onAllowedOrigin && probe?.status === 200 && hasComposer && hasAddFiles && hasModelControl) {
-    if (probe?.domLoginCta && (probe?.bodyHasId || probe?.bodyHasEmail)) {
+    if (probe?.domLoginCta) {
       return {
         state: "auth_transitioning",
         message: "ChatGPT backend session is authenticated, but the web shell still shows public login CTA chrome. Rerun /oracle-auth.",
