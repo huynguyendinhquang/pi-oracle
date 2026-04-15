@@ -796,6 +796,33 @@ async function clickModelFamilyControlViaDom(job, family) {
   `));
   return result && typeof result === "object" && result.found === true;
 }
+
+async function openModelConfigurationViaDom(job) {
+  const result = await evalPage(job, toAsyncJsonScript(`
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const readText = (element) => (element?.innerText || element?.getAttribute("aria-label") || element?.textContent || "").replace(/\s+/g, " ").trim();
+    const hasConfigurationUi = () => Boolean(
+      document.querySelector('[role="dialog"] [role="radio"], [role="dialog"] [role="switch"], [role="menuitemradio"]')
+    );
+    if (hasConfigurationUi()) return { opened: true, step: "already-open" };
+    const selector = Array.from(document.querySelectorAll('button,[role="button"]')).find((element) =>
+      element.getAttribute("aria-label") === "Model selector" ||
+      element.getAttribute("data-testid") === "model-switcher-dropdown-button"
+    );
+    if (!selector) return { opened: false, step: "missing-selector" };
+    selector.click();
+    await wait(150);
+    if (hasConfigurationUi()) return { opened: true, step: "selector-clicked" };
+    const configure = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], button, [role="button"]')).find(
+      (element) => readText(element) === "Configure..."
+    );
+    if (!configure) return { opened: false, step: "missing-configure" };
+    configure.click();
+    await wait(250);
+    return { opened: hasConfigurationUi(), step: "configure-clicked" };
+  `));
+  return result && typeof result === "object" && result.opened === true;
+}
 async function maybeClickLabeledEntry(job, label, options = {}) {
   const snapshot = await snapshotText(job);
   const entry = (options.last ? findLastEntry : findEntry)(
@@ -1106,6 +1133,13 @@ async function openModelConfiguration(job) {
       const postConfigure = await snapshotText(job);
       if (snapshotHasModelConfigurationUi(postConfigure)) return postConfigure;
     }
+  }
+
+  const openedViaDom = await openModelConfigurationViaDom(job);
+  if (openedViaDom) {
+    await agentBrowser(job, "wait", "300");
+    const afterDomOpen = await snapshotText(job);
+    if (snapshotHasModelConfigurationUi(afterDomOpen)) return afterDomOpen;
   }
 
   throw new Error("Could not open model configuration UI");
