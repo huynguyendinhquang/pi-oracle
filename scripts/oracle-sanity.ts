@@ -3408,10 +3408,12 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("child.matches('table')"), "worker structured extraction should preserve simple tables");
   assert(workerSource.includes("kind === 'citation' || kind === 'source'"), "worker structured extraction should preserve citation/source anchors as references");
   assert(workerSource.includes("const fallbackMessages = await assistantMessages(job);"), "worker completion polling should retain assistantMessages plain-text fallback path");
-  assert(workerSource.includes("targetMessage = fallbackMessages[baselineAssistantCount] || targetMessage;"), "worker completion polling should prefer plain-text fallback messages when structured extraction yields an empty target text");
+  assert(workerSource.includes("const fallbackMessage = fallbackMessages[baselineAssistantCount];") && workerSource.includes("if (fallbackMessage?.text) {"), "worker completion polling should only switch to plain-text fallback when the fallback target message has usable text");
   assert(workerSource.includes("const targetText = targetMessage?.text || \"\";"), "worker completion detection should continue using plain text derived from the target response");
   assert(workerSource.includes("const structuredResult = await assistantMessagesStructured(job).then((messages) => ({ messages, ok: true })).catch((error) => ({ messages: [], ok: false, error }));"), "worker completion polling should trap structured extraction errors and continue with plain-text fallback");
-  assert(workerSource.includes('responseExtractionMode: completion.structuredOk ? "structured-dom" : "plain-text-fallback"'), "worker completion metadata should persist whether structured extraction succeeded or plain-text fallback was used");
+  assert(workerSource.includes("Structured response extraction failed:"), "worker should log structured extraction failures even when plain-text fallback does not provide usable text");
+  assert(workerSource.includes('const responseExtractionMode = structuredResult.ok && !usedPlainTextFallback ? "structured-dom" : "plain-text-fallback";'), "worker completion metadata mode should depend on structured extractor success and actual fallback-text usage");
+  assert(workerSource.includes("responseExtractionMode: completion.responseExtractionMode"), "worker completion metadata should persist the resolved extraction mode from completion polling");
   assert(workerSource.includes("response.rich.json"), "worker should persist additive response.rich.json sidecars during phase 1");
   assert(workerSource.includes("response.rich.md"), "worker should persist additive response.rich.md sidecars during phase 1");
   assert(workerSource.includes("response.references.json"), "worker should persist additive response.references.json sidecars during phase 1");

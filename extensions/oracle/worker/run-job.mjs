@@ -1842,7 +1842,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let responseRateLimitDeadline = 0;
   let loggedResponseRateLimit = false;
   let responseRateLimitDeferAttempts = 0;
-  let loggedStructuredFallback = false;
+  let loggedStructuredExtractionFailure = false;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -1853,19 +1853,24 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const rateLimitSignal = detectRateLimitSignal(`${snapshot}\n${body}`);
     const structuredResult = await assistantMessagesStructured(job).then((messages) => ({ messages, ok: true })).catch((error) => ({ messages: [], ok: false, error }));
-    let targetMessage = structuredResult.messages[baselineAssistantCount];
-    let structuredOk = structuredResult.ok && Boolean(targetMessage?.text);
-    if (!structuredOk) {
+    if (!structuredResult.ok && !loggedStructuredExtractionFailure) {
+      const reason = structuredResult.error instanceof Error ? structuredResult.error.message : String(structuredResult.error);
+      await log(`Structured response extraction failed: ${reason}`);
+      loggedStructuredExtractionFailure = true;
+    }
+    const structuredTargetMessage = structuredResult.messages[baselineAssistantCount];
+    let targetMessage = structuredTargetMessage;
+    let usedPlainTextFallback = false;
+    if (!targetMessage?.text) {
       const fallbackMessages = await assistantMessages(job);
-      targetMessage = fallbackMessages[baselineAssistantCount] || targetMessage;
-      if (!structuredResult.ok && targetMessage?.text && !loggedStructuredFallback) {
-        const reason = structuredResult.error instanceof Error ? structuredResult.error.message : String(structuredResult.error);
-        await log(`Structured response extraction failed; using plain-text fallback: ${reason}`);
-        loggedStructuredFallback = true;
+      const fallbackMessage = fallbackMessages[baselineAssistantCount];
+      if (fallbackMessage?.text) {
+        targetMessage = fallbackMessage;
+        usedPlainTextFallback = true;
       }
-      structuredOk = false;
     }
     const targetText = targetMessage?.text || "";
+    const responseExtractionMode = structuredResult.ok && !usedPlainTextFallback ? "structured-dom" : "plain-text-fallback";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
 
     if (rateLimitSignal) {
@@ -1974,7 +1979,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       else stableCount = 1;
       lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
-        return { responseIndex: baselineAssistantCount, responseText: targetText, structuredOk };
+        return { responseIndex: baselineAssistantCount, responseText: targetText, responseExtractionMode };
       }
     } else {
       lastCompletionSignature = "";
@@ -2398,7 +2403,7 @@ async function run() {
         responsePath: currentJob.responsePath,
         responseFormat: "text/plain",
         artifactFailureCount,
-        responseExtractionMode: completion.structuredOk ? "structured-dom" : "plain-text-fallback",
+        responseExtractionMode: completion.responseExtractionMode,
         cleanupPending: true,
       },
     }));
