@@ -3411,6 +3411,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("clickModelFamilyControlViaDom"), "worker should have a DOM-driven fallback for model family controls when snapshot matching misses current ChatGPT UI variants");
   assert(workerSource.includes("openModelConfigurationViaDom"), "worker should have a DOM-driven fallback for opening the model configuration UI when ref-click opening misses current ChatGPT UI variants");
   assert(workerSource.includes("reopenModelConfigurationIfClosed"), "worker should reopen model configuration when ChatGPT closes selector/config surfaces mid-flow");
+  assert(workerSource.includes("snapshotFamilySelectionMatches"), "worker should verify instant family selection before toggling auto-switch state");
   assert(workerSource.includes("Model configuration UI closed during"), "worker should log model configuration reopen attempts when ChatGPT collapses the UI");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");

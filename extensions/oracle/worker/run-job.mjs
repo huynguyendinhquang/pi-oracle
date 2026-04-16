@@ -1151,6 +1151,12 @@ async function reopenModelConfigurationIfClosed(job, snapshot, reason) {
   return openModelConfiguration(job);
 }
 
+function snapshotFamilySelectionMatches(snapshot, selection) {
+  if (selection.modelFamily !== "instant") return snapshotWeaklyMatchesRequestedModel(snapshot, selection);
+  return snapshotWeaklyMatchesRequestedModel(snapshot, { ...selection, autoSwitchToThinking: false })
+    || snapshotWeaklyMatchesRequestedModel(snapshot, { ...selection, autoSwitchToThinking: true });
+}
+
 async function waitForModelConfigurationToSettle(job, options = {}) {
   const deadline = Date.now() + MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS;
   let lastCloseAttemptAt = 0;
@@ -1233,7 +1239,8 @@ async function configureModel(job) {
     familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
   }
 
-  if (!alreadyConfiguredInUi && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection) && !snapshotWeaklyMatchesRequestedModel(familySnapshot, job.selection)) {
+  const familySelectionMatches = snapshotFamilySelectionMatches(familySnapshot, job.selection);
+  if (!alreadyConfiguredInUi && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection) && !familySelectionMatches) {
     throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
   }
 
