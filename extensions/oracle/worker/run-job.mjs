@@ -33,6 +33,7 @@ import {
   autoSwitchToThinkingSelectionVisible,
 } from "./chatgpt-ui-helpers.mjs";
 import { assistantSnapshotSlice, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { renderStructuredResponsePlainText } from "./response-format-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -57,6 +58,9 @@ const WORKER_SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
+const STRUCTURED_RESPONSE_JSON_FILE = "response.rich.json";
+const STRUCTURED_RESPONSE_MARKDOWN_FILE = "response.rich.md";
+const STRUCTURED_RESPONSE_REFERENCES_FILE = "response.references.json";
 const ARTIFACT_CANDIDATE_STABILITY_TIMEOUT_MS = 15_000;
 const ARTIFACT_CANDIDATE_STABILITY_POLL_MS = 1_500;
 const ARTIFACT_CANDIDATE_STABILITY_POLLS = 2;
@@ -1542,6 +1546,234 @@ async function uploadArchive(job) {
   await mutateJob((current) => ({ ...current, archiveDeletedAfterUpload: true }));
 }
 
+async function assistantMessagesStructured(job) {
+  const result = await evalPage(
+    job,
+    toJsonScript(`
+      const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
+        .filter((el) => (el.textContent || '').trim() === 'ChatGPT said:');
+      const normalize = (value) => String(value || '').replace(/\r\n?/g, '\n');
+      const compact = (value) => normalize(value).replace(/[ \t]+/g, ' ').trim();
+      const renderText = (node) => {
+        if (!node) return '';
+        const clone = node.cloneNode(true);
+        const host = document.createElement('div');
+        host.style.position = 'fixed';
+        host.style.left = '-99999px';
+        host.style.top = '0';
+        host.style.whiteSpace = 'pre-wrap';
+        host.style.pointerEvents = 'none';
+        host.appendChild(clone);
+        document.body.appendChild(host);
+        let text = (host.innerText || host.textContent || '').trim();
+        host.remove();
+        const endings = ['\\nChatGPT can make mistakes. Check important info.'];
+        for (const ending of endings) {
+          if (text.includes(ending)) text = text.split(ending)[0].trim();
+        }
+        text = text
+          .split('\\n')
+          .map((line) => line.trimEnd())
+          .filter((line) => line.trim() && !/^Thought for\\b/i.test(line.trim()))
+          .join('\\n')
+          .trim();
+        return text;
+      };
+      const toAbsoluteHref = (href) => {
+        if (!href) return undefined;
+        try {
+          return new URL(href, document.baseURI).href;
+        } catch {
+          return undefined;
+        }
+      };
+      const classifyAnchorKind = (anchor, text) => {
+        const label = compact(anchor?.getAttribute('aria-label') || text || anchor?.textContent || '');
+        if (anchor?.closest('sup') || /^\\[\\d+\\]$/.test(label)) return 'citation';
+        if (/(?:citation|source)/i.test(label)) return 'source';
+        return 'link';
+      };
+      const mergeInlineText = (inlines) => {
+        const merged = [];
+        for (const inline of inlines) {
+          if (!inline || typeof inline !== 'object') continue;
+          const isLink = typeof inline.href === 'string' && inline.href.length > 0;
+          const text = normalize(inline.text || '');
+          if (!text.trim() && !isLink) continue;
+          const previous = merged[merged.length - 1];
+          if (!isLink && previous && !previous.href) {
+            previous.text = (previous.text || '') + text;
+            continue;
+          }
+          merged.push({ ...inline, text });
+        }
+        return merged;
+      };
+      const extractInlines = (node) => {
+        if (!node) return [];
+        const inlines = [];
+        for (const child of Array.from(node.childNodes || [])) {
+          if (child.nodeType === Node.TEXT_NODE) {
+            inlines.push({ type: 'text', text: normalize(child.nodeValue || '') });
+            continue;
+          }
+          if (!(child instanceof Element)) continue;
+          if (child.tagName === 'BR') {
+            inlines.push({ type: 'text', text: '\\n' });
+            continue;
+          }
+          if (child.tagName === 'A' && child.getAttribute('href')) {
+            const href = toAbsoluteHref(child.getAttribute('href'));
+            const text = normalize(child.innerText || child.textContent || '');
+            if (href) {
+              inlines.push({
+                type: 'link',
+                kind: classifyAnchorKind(child, text),
+                text,
+                href,
+              });
+            } else {
+              inlines.push({ type: 'text', text });
+            }
+            continue;
+          }
+          inlines.push(...extractInlines(child));
+        }
+        return mergeInlineText(inlines);
+      };
+      const inlineText = (inlines) => inlines.map((inline) => normalize(inline?.text || '')).join('');
+      const detectCodeLanguage = (node) => {
+        const classNames = [node?.className, node?.querySelector('code')?.className].filter(Boolean).join(' ');
+        const match = classNames.match(/(?:language|lang)-([A-Za-z0-9_+-]+)/);
+        return match?.[1]?.toLowerCase();
+      };
+      const extractListBlock = (listNode) => {
+        const ordered = listNode?.tagName === 'OL';
+        const items = Array.from(listNode?.querySelectorAll(':scope > li') || [])
+          .map((item) => {
+            const inlines = extractInlines(item);
+            const text = compact(inlineText(inlines)) || compact(item?.innerText || item?.textContent || '');
+            if (!text && inlines.length === 0) return undefined;
+            return { text, inlines };
+          })
+          .filter(Boolean);
+        return items.length > 0 ? { type: 'list', ordered, items } : undefined;
+      };
+      const extractCodeBlock = (node) => {
+        const codeNode = node?.tagName === 'PRE' ? node.querySelector('code') || node : node;
+        const text = normalize(codeNode?.textContent || '').replace(/\n+$/g, '');
+        if (!text.trim()) return undefined;
+        const language = detectCodeLanguage(node);
+        return language ? { type: 'code', language, text } : { type: 'code', text };
+      };
+      const extractTableBlock = (tableNode) => {
+        const rows = Array.from(tableNode?.querySelectorAll('tr') || [])
+          .map((row) => Array.from(row.querySelectorAll('th,td')).map((cell) => compact(cell.innerText || cell.textContent || '')))
+          .filter((row) => row.some((cell) => cell));
+        if (rows.length === 0) return undefined;
+        return {
+          type: 'table',
+          text: rows.map((row) => row.join(' | ')).join('\\n'),
+          rows,
+        };
+      };
+      const extractBlocks = (root) => {
+        const blocks = [];
+        const walk = (node) => {
+          if (!node || !(node instanceof Element)) return;
+          for (const child of Array.from(node.children || [])) {
+            if (!(child instanceof Element)) continue;
+            if (child.matches('ul,ol')) {
+              const listBlock = extractListBlock(child);
+              if (listBlock) blocks.push(listBlock);
+              continue;
+            }
+            if (child.matches('pre')) {
+              const codeBlock = extractCodeBlock(child);
+              if (codeBlock) blocks.push(codeBlock);
+              continue;
+            }
+            if (child.matches('code') && child.parentElement?.tagName !== 'PRE') {
+              const codeBlock = extractCodeBlock(child);
+              if (codeBlock) blocks.push(codeBlock);
+              continue;
+            }
+            if (child.matches('blockquote')) {
+              const inlines = extractInlines(child);
+              const text = compact(inlineText(inlines)) || compact(child.innerText || child.textContent || '');
+              if (text || inlines.length > 0) blocks.push({ type: 'blockquote', text, inlines });
+              continue;
+            }
+            if (child.matches('table')) {
+              const tableBlock = extractTableBlock(child);
+              if (tableBlock) blocks.push(tableBlock);
+              continue;
+            }
+            if (child.matches('p')) {
+              const inlines = extractInlines(child);
+              const text = compact(inlineText(inlines)) || compact(child.innerText || child.textContent || '');
+              if (text || inlines.length > 0) blocks.push({ type: 'paragraph', text, inlines });
+              continue;
+            }
+            walk(child);
+          }
+        };
+        walk(root);
+        return blocks;
+      };
+      const dedupeReferences = (entries) => {
+        const deduped = [];
+        const seen = new Set();
+        for (const entry of entries) {
+          if (!entry || typeof entry !== 'object' || !entry.href) continue;
+          const key = [entry.kind || '', entry.label || '', entry.text || '', entry.href || ''].join('|');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          deduped.push(entry);
+        }
+        return deduped;
+      };
+      const extractStructured = (host) => {
+        if (!host) return undefined;
+        const links = [];
+        const references = [];
+        for (const anchor of Array.from(host.querySelectorAll('a[href]'))) {
+          const href = toAbsoluteHref(anchor.getAttribute('href'));
+          if (!href) continue;
+          const text = compact(anchor.innerText || anchor.textContent || anchor.getAttribute('aria-label') || '');
+          const kind = classifyAnchorKind(anchor, text);
+          const entry = { kind, label: text || undefined, text: text || undefined, href };
+          if (kind === 'citation' || kind === 'source') references.push(entry);
+          else links.push(entry);
+        }
+        return {
+          plainText: renderText(host),
+          blocks: extractBlocks(host),
+          links: dedupeReferences(links),
+          references: dedupeReferences(references),
+        };
+      };
+      return {
+        messages: headings.map((heading) => {
+          const host = heading.nextElementSibling;
+          return {
+            text: renderText(host),
+            structured: extractStructured(host),
+          };
+        }),
+      };
+    `),
+  );
+
+  if (!Array.isArray(result?.messages)) return [];
+  return result.messages.map((message) => {
+    const structured = message?.structured && typeof message.structured === "object" ? message.structured : undefined;
+    const fallbackText = typeof message?.text === "string" ? message.text : "";
+    const text = renderStructuredResponsePlainText(structured) || fallbackText;
+    return { text, structured };
+  });
+}
+
 async function assistantMessages(job) {
   const result = await evalPage(
     job,
@@ -1619,8 +1851,12 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const copyResponseCount = (snapshot.match(/Copy response/g) || []).length;
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const rateLimitSignal = detectRateLimitSignal(`${snapshot}\n${body}`);
-    const messages = await assistantMessages(job);
-    const targetMessage = messages[baselineAssistantCount];
+    const structuredMessages = await assistantMessagesStructured(job).catch(() => []);
+    let targetMessage = structuredMessages[baselineAssistantCount];
+    if (!targetMessage?.text) {
+      const fallbackMessages = await assistantMessages(job);
+      targetMessage = targetMessage || fallbackMessages[baselineAssistantCount];
+    }
     const targetText = targetMessage?.text || "";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
 

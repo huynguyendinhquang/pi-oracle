@@ -3399,6 +3399,16 @@ async function testResponseTimeoutGuard(): Promise<void> {
     workerSource.includes('from "./response-format-helpers.mjs"') && workerSource.includes("assistantMessages(job)"),
     "worker should reference structured response helpers while keeping the plain-text assistantMessages fallback path during phase 1",
   );
+  assert(workerSource.includes("assistantMessagesStructured(job)"), "worker should extract structured assistant responses alongside the plain-text helper");
+  assert(workerSource.includes("querySelectorAll('a[href]')"), "worker structured extraction should capture anchor href metadata from assistant responses");
+  assert(workerSource.includes("new URL(href, document.baseURI).href"), "worker structured extraction should absolutize relative href values against document.baseURI");
+  assert(workerSource.includes("child.matches('ul,ol')"), "worker structured extraction should preserve ordered and unordered lists");
+  assert(workerSource.includes("child.matches('pre')") && workerSource.includes("child.matches('code')"), "worker structured extraction should preserve pre/code blocks");
+  assert(workerSource.includes("child.matches('blockquote')"), "worker structured extraction should preserve blockquotes");
+  assert(workerSource.includes("child.matches('table')"), "worker structured extraction should preserve simple tables");
+  assert(workerSource.includes("kind === 'citation' || kind === 'source'"), "worker structured extraction should preserve citation/source anchors as references");
+  assert(workerSource.includes("const fallbackMessages = await assistantMessages(job);"), "worker completion polling should retain assistantMessages plain-text fallback path");
+  assert(workerSource.includes("const targetText = targetMessage?.text || \"\";"), "worker completion detection should continue using plain text derived from the target response");
   assert(workerSource.includes("response.rich.json"), "worker should persist additive response.rich.json sidecars during phase 1");
   assert(workerSource.includes("response.rich.md"), "worker should persist additive response.rich.md sidecars during phase 1");
   assert(workerSource.includes("response.references.json"), "worker should persist additive response.references.json sidecars during phase 1");
