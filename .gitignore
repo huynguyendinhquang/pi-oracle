@@ -6,3 +6,4 @@ node_modules/
 progress.md
 review.md
 .pi-lens/
+.worktrees/
