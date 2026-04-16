@@ -67,6 +67,8 @@ const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS = 20_000;
 const MODEL_CONFIGURATION_SETTLE_POLL_MS = 250;
+const COMPOSER_SETTLE_TIMEOUT_MS = 20_000;
+const COMPOSER_SETTLE_POLL_MS = 250;
 const MODEL_CONFIGURATION_CLOSE_RETRY_MS = 1_000;
 const POST_SEND_SETTLE_MS = 15_000;
 const RESPONSE_DISCONNECT_RECOVERY_ATTEMPTS = 2;
@@ -873,10 +875,24 @@ async function openEffortDropdown(job) {
 }
 
 async function setComposerText(job, text) {
-  const snapshot = await snapshotText(job);
-  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === CHATGPT_LABELS.composer);
-  if (!entry) throw new Error("Could not find ChatGPT composer textbox");
-  await agentBrowser(job, "fill", entry.ref, text);
+  const availabilityDeadline = Date.now() + COMPOSER_SETTLE_TIMEOUT_MS;
+  const rateLimitRecovery = { deadline: 0, lastReloadAt: 0, logged: false };
+  while (Date.now() < availabilityDeadline) {
+    const snapshot = await snapshotText(job);
+    const body = await pageText(job).catch(() => "");
+    const rateLimitSignal = detectRateLimitSignal(`${snapshot}\n${body}`);
+    if (rateLimitSignal) {
+      await waitForPromptComposerRateLimitRecovery(job, rateLimitRecovery, rateLimitSignal, snapshot);
+      continue;
+    }
+    const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === CHATGPT_LABELS.composer);
+    if (entry) {
+      await agentBrowser(job, "fill", entry.ref, text);
+      return;
+    }
+    await sleep(COMPOSER_SETTLE_POLL_MS);
+  }
+  throw new Error("Could not find ChatGPT composer textbox");
 }
 
 function detectRateLimitSignal(text) {
@@ -1164,10 +1180,16 @@ async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
 
 async function waitForSendReady(job) {
   const timeoutAt = Date.now() + 5 * 60 * 1000;
+  const rateLimitRecovery = { deadline: 0, lastReloadAt: 0, logged: false };
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const snapshot = await snapshotText(job);
     const body = await pageText(job).catch(() => "");
+    const rateLimitSignal = detectRateLimitSignal(`${snapshot}\n${body}`);
+    if (rateLimitSignal) {
+      await waitForPromptComposerRateLimitRecovery(job, rateLimitRecovery, rateLimitSignal, snapshot);
+      continue;
+    }
     const errorText = detectUploadErrorText(`${snapshot}\n${body}`);
     if (errorText) {
       throw new Error(`Upload error detected: ${errorText}`);
@@ -1227,6 +1249,38 @@ async function waitForModelConfigurationRateLimitRecovery(job, state, signal, sn
   await sleep(1000);
 }
 
+async function waitForPromptComposerRateLimitRecovery(job, state, signal, snapshot) {
+  if (!state.deadline) state.deadline = Date.now() + TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS;
+  if (!state.logged) {
+    await log(`Prompt composer rate limit detected (${signal}); waiting up to ${TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS}ms for automatic recovery`);
+    state.logged = true;
+  }
+  if (snapshot && (await maybeDismissRateLimitInterstitial(job, snapshot))) {
+    await sleep(300);
+    return;
+  }
+  if (Date.now() >= state.deadline) {
+    await captureDiagnostics(job, "prompt-composer-rate-limit-timeout");
+    throw new Error(
+      "ChatGPT kept returning a temporary rate-limit page while preparing the prompt composer. Wait a few minutes, then retry the oracle job.",
+    );
+  }
+  if (Date.now() - state.lastReloadAt >= TRANSIENT_OUTAGE_RELOAD_INTERVAL_MS) {
+    state.lastReloadAt = Date.now();
+    await agentBrowser(job, "reload").catch(() => undefined);
+    await sleep(1500);
+  }
+  await sleep(1000);
+}
+
+async function captureModelConfigurationRateLimitAfterClickFailure(job, error) {
+  const snapshot = await snapshotText(job).catch(() => "");
+  const body = await pageText(job).catch(() => "");
+  const signal = detectRateLimitSignal(`${snapshot}\n${body}`);
+  if (signal) return { signal, snapshot };
+  throw error;
+}
+
 async function openModelConfiguration(job) {
   const rateLimitRecovery = { deadline: 0, lastReloadAt: 0, logged: false };
   while (true) {
@@ -1250,7 +1304,12 @@ async function openModelConfiguration(job) {
       }
       const entry = findEntry(snapshot, predicate);
       if (!entry) continue;
-      await clickRef(job, entry.ref);
+      try {
+        await clickRef(job, entry.ref);
+      } catch (error) {
+        sawRateLimit = await captureModelConfigurationRateLimitAfterClickFailure(job, error);
+        break;
+      }
       await agentBrowser(job, "wait", "800");
       const after = await snapshotText(job);
       const afterBody = await pageText(job).catch(() => "");
@@ -1267,7 +1326,12 @@ async function openModelConfiguration(job) {
       );
 
       if (configureEntry) {
-        await clickRef(job, configureEntry.ref);
+        try {
+          await clickRef(job, configureEntry.ref);
+        } catch (error) {
+          sawRateLimit = await captureModelConfigurationRateLimitAfterClickFailure(job, error);
+          break;
+        }
         await agentBrowser(job, "wait", "1200");
         const postConfigure = await snapshotText(job);
         const postConfigureBody = await pageText(job).catch(() => "");
@@ -1569,6 +1633,11 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
           `Response rate limit detected (${rateLimitSignal}); waiting up to ${TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS}ms before deferring browser runtime`,
         );
         loggedResponseRateLimit = true;
+      }
+      if (snapshot && (await maybeDismissRateLimitInterstitial(job, snapshot))) {
+        await log("Response rate-limit interstitial dismissed; retrying response harvest");
+        await sleep(300);
+        continue;
       }
       if (Date.now() < responseRateLimitDeadline) {
         await sleep(job.config.worker.pollMs);

@@ -3416,12 +3416,17 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("waitForModelConfigurationRateLimitRecovery"), "worker should include dedicated rate-limit recovery for model configuration UI opening");
   assert(workerSource.includes("model-config-rate-limit-timeout"), "worker should capture diagnostics when model-configuration rate limiting persists");
   assert(workerSource.includes("temporary rate-limit page while opening model configuration"), "worker should report model-configuration rate-limit failures explicitly instead of generic UI-open errors");
+  assert(workerSource.includes("captureModelConfigurationRateLimitAfterClickFailure"), "worker should treat model-configuration click failures as recoverable when ChatGPT swaps in a rate-limit interstitial between snapshot and click");
   assert(workerSource.includes("maybeDismissRateLimitInterstitial"), "worker should try dismissing rate-limit interstitial buttons before falling back to reload/backoff");
   assert(workerSource.includes("Dismissing rate-limit interstitial via"), "worker should log when it clicks a rate-limit acknowledgment control");
   assert(workerSource.includes("suspendRuntimeForDeferredResponse"), "worker should be able to close browser runtime and harvest response later after send-time rate limiting");
   assert(workerSource.includes("waitForRuntimeLeaseForDeferredResponse"), "worker should be able to reacquire runtime capacity before deferred response harvest resumes");
   assert(workerSource.includes("Reopening the saved ChatGPT thread after deferred rate-limit wait."), "worker should resume harvesting from the saved ChatGPT thread after deferred response rate limiting");
   assert(workerSource.includes("Resuming response harvest from the saved ChatGPT thread."), "worker should record explicit lifecycle breadcrumbs when deferred response harvesting resumes");
+  assert(workerSource.includes("waitForPromptComposerRateLimitRecovery"), "worker should include dedicated rate-limit recovery when a prompt composer interstitial hides the textbox or send button");
+  assert(workerSource.includes("prompt-composer-rate-limit-timeout"), "worker should capture diagnostics when prompt-composer rate limiting persists");
+  assert(workerSource.includes("temporary rate-limit page while preparing the prompt composer"), "worker should report prompt-composer rate-limit failures explicitly instead of generic composer lookup errors");
+  assert(workerSource.includes("Response rate-limit interstitial dismissed; retrying response harvest"), "worker should dismiss response-phase rate-limit interstitials before waiting or deferring harvest");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
