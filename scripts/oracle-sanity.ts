@@ -3382,6 +3382,14 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
   const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
+  assert(
+    workerSource.includes('from "./response-format-helpers.mjs"') && workerSource.includes("assistantMessages(job)"),
+    "worker should reference structured response helpers while keeping the plain-text assistantMessages fallback path during phase 1",
+  );
+  assert(workerSource.includes("response.rich.json"), "worker should persist additive response.rich.json sidecars during phase 1");
+  assert(workerSource.includes("response.rich.md"), "worker should persist additive response.rich.md sidecars during phase 1");
+  assert(workerSource.includes("response.references.json"), "worker should persist additive response.references.json sidecars during phase 1");
+  assert(workerSource.includes('responseFormat: "text/plain"'), "worker should keep text/plain as the compatibility response format during phase 1");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
   assert(workerSource.includes("querySelectorAll('button, a')"), "worker should scan both button and link artifact controls");
