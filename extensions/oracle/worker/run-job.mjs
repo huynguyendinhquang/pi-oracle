@@ -1842,6 +1842,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let responseRateLimitDeadline = 0;
   let loggedResponseRateLimit = false;
   let responseRateLimitDeferAttempts = 0;
+  let loggedStructuredFallback = false;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -1851,11 +1852,18 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const copyResponseCount = (snapshot.match(/Copy response/g) || []).length;
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const rateLimitSignal = detectRateLimitSignal(`${snapshot}\n${body}`);
-    const structuredMessages = await assistantMessagesStructured(job).catch(() => []);
-    let targetMessage = structuredMessages[baselineAssistantCount];
-    if (!targetMessage?.text) {
+    const structuredResult = await assistantMessagesStructured(job).then((messages) => ({ messages, ok: true })).catch((error) => ({ messages: [], ok: false, error }));
+    let targetMessage = structuredResult.messages[baselineAssistantCount];
+    let structuredOk = structuredResult.ok && Boolean(targetMessage?.text);
+    if (!structuredOk) {
       const fallbackMessages = await assistantMessages(job);
       targetMessage = fallbackMessages[baselineAssistantCount] || targetMessage;
+      if (!structuredResult.ok && targetMessage?.text && !loggedStructuredFallback) {
+        const reason = structuredResult.error instanceof Error ? structuredResult.error.message : String(structuredResult.error);
+        await log(`Structured response extraction failed; using plain-text fallback: ${reason}`);
+        loggedStructuredFallback = true;
+      }
+      structuredOk = false;
     }
     const targetText = targetMessage?.text || "";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
@@ -1966,7 +1974,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       else stableCount = 1;
       lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
-        return { responseIndex: baselineAssistantCount, responseText: targetText };
+        return { responseIndex: baselineAssistantCount, responseText: targetText, structuredOk };
       }
     } else {
       lastCompletionSignature = "";
@@ -2390,6 +2398,7 @@ async function run() {
         responsePath: currentJob.responsePath,
         responseFormat: "text/plain",
         artifactFailureCount,
+        responseExtractionMode: completion.structuredOk ? "structured-dom" : "plain-text-fallback",
         cleanupPending: true,
       },
     }));
