@@ -192,6 +192,7 @@ function referencesFromInlines(inlines) {
       if (!href) return undefined;
       return {
         kind: optionalString(inline.kind) || "inline",
+        label: optionalString(inline.text),
         text: optionalString(inline.text),
         href,
       };

@@ -4699,6 +4699,22 @@ function testResponseFormatHelpers(): void {
       && plainTextStableReferences.some((reference) => reference.href === "https://example.com/b"),
     "response format helpers should preserve href metadata beyond visible link text",
   );
+  const duplicateReferenceFixture = {
+    blocks: [
+      {
+        type: "paragraph",
+        inlines: [
+          { type: "link", kind: "link", text: "OpenAI", href: "https://openai.com/docs" },
+        ],
+      },
+    ],
+    links: [
+      { kind: "link", label: "OpenAI", text: "OpenAI", href: "https://openai.com/docs" },
+    ],
+  };
+  const dedupedReferences = buildResponseReferences(duplicateReferenceFixture);
+  assert(dedupedReferences.length === 1, "response format helpers should dedupe top-level and inline copies of the same href metadata");
+  assert(dedupedReferences[0]?.href === "https://openai.com/docs", "response format helpers should keep deduped href metadata intact");
 }
 
 
