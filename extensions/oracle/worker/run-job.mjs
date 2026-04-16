@@ -71,6 +71,8 @@ const MODEL_CONFIGURATION_CLOSE_RETRY_MS = 1_000;
 const POST_SEND_SETTLE_MS = 15_000;
 const RESPONSE_DISCONNECT_RECOVERY_ATTEMPTS = 2;
 const CHALLENGE_RECOVERY_TIMEOUT_MS = 60_000;
+const TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS = 3 * 60_000;
+const TRANSIENT_OUTAGE_RELOAD_INTERVAL_MS = 20_000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser", "/usr/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
@@ -853,6 +855,18 @@ async function setComposerText(job, text) {
   await agentBrowser(job, "fill", entry.ref, text);
 }
 
+function detectRateLimitSignal(text) {
+  const patterns = [
+    { pattern: /you(?:'|’)re making requests too quickly/i, label: "requests too quickly" },
+    { pattern: /temporarily limited access to your conversations/i, label: "temporarily limited conversation access" },
+    { pattern: /please wait (?:a )?few minutes/i, label: "wait a few minutes prompt" },
+    { pattern: /too many requests/i, label: "too many requests" },
+    { pattern: /rate limit/i, label: "rate limit" },
+  ];
+  const match = patterns.find(({ pattern }) => pattern.test(text));
+  return match?.label;
+}
+
 function classifyChatPage({ job, url, snapshot, body, probe }) {
   const text = `${snapshot}\n${body}`;
   const challengePatterns = [
@@ -867,12 +881,19 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
     return { state: "challenge_blocking", message: "ChatGPT is showing a challenge/verification page" };
   }
 
+  const rateLimitSignal = detectRateLimitSignal(text);
+  if (rateLimitSignal) {
+    return {
+      state: "transient_outage_error",
+      message: `ChatGPT is temporarily rate-limiting requests (${rateLimitSignal})`,
+    };
+  }
+
   const outagePatterns = [
     /something went wrong/i,
     /a network error occurred/i,
     /an error occurred while connecting to the websocket/i,
     /try again later/i,
-    /rate limit/i,
   ];
   if (outagePatterns.some((pattern) => pattern.test(text))) {
     return { state: "transient_outage_error", message: "ChatGPT is showing a transient outage/error page" };
@@ -940,6 +961,9 @@ async function waitForOracleReady(job) {
   let retriedAuthTransition = false;
   let challengeDeadline = 0;
   let loggedChallengeWait = false;
+  let transientOutageDeadline = 0;
+  let lastOutageReloadAt = 0;
+  let loggedTransientOutageWait = false;
 
   while (Date.now() < timeoutAt) {
     const [url, snapshot, body, probe] = await Promise.all([
@@ -965,11 +989,42 @@ async function waitForOracleReady(job) {
       await sleep(1000);
       continue;
     }
-    if (classification.state === "transient_outage_error" && !retriedOutage) {
-      retriedOutage = true;
-      await agentBrowser(job, "reload").catch(() => undefined);
-      await sleep(1500);
-      continue;
+    if (classification.state === "transient_outage_error") {
+      const rateLimited = /rate-limit|rate limiting/i.test(classification.message);
+      if (rateLimited && !transientOutageDeadline) {
+        transientOutageDeadline = Date.now() + TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS;
+        timeoutAt = Math.max(timeoutAt, transientOutageDeadline);
+      }
+
+      const shouldReload =
+        !retriedOutage ||
+        (rateLimited && Date.now() - lastOutageReloadAt >= TRANSIENT_OUTAGE_RELOAD_INTERVAL_MS);
+      if (shouldReload) {
+        retriedOutage = true;
+        lastOutageReloadAt = Date.now();
+        await agentBrowser(job, "reload").catch(() => undefined);
+        await sleep(1500);
+      }
+
+      if (rateLimited) {
+        if (!loggedTransientOutageWait) {
+          await log(
+            `Rate limit detected; waiting up to ${TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS}ms for automatic recovery`,
+          );
+          loggedTransientOutageWait = true;
+        }
+        if (Date.now() < transientOutageDeadline) {
+          await sleep(1000);
+          continue;
+        }
+        await captureDiagnostics(job, "preflight-rate-limit-timeout");
+        throw new Error(
+          "ChatGPT kept returning a temporary rate-limit page for several minutes. Wait a few minutes, then retry the oracle job.",
+        );
+      }
+
+      await captureDiagnostics(job, "preflight-transient-outage");
+      throw new Error(classification.message);
     }
     if (classification.state === "challenge_blocking") {
       const targetUrl = url || job.chatUrl || job.config.browser.chatUrl;
@@ -1109,40 +1164,118 @@ async function clickSend(job) {
   await clickRef(job, entry.ref);
 }
 
-async function openModelConfiguration(job) {
-  const initialSnapshot = await snapshotText(job);
-  if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
+function matchesRateLimitAcknowledgeControl(candidate) {
+  if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
+  const label = candidate.label.trim().toLowerCase();
+  return ["got it", "i understand", "understand", "understood", "okay", "ok"].includes(label);
+}
 
-  for (const predicate of [matchesModelConfigurationOpener]) {
-    const snapshot = await snapshotText(job);
-    const entry = findEntry(snapshot, predicate);
-    if (!entry) continue;
-    await clickRef(job, entry.ref);
-    await agentBrowser(job, "wait", "800");
-    const after = await snapshotText(job);
-    if (snapshotHasModelConfigurationUi(after)) return after;
+async function maybeDismissRateLimitInterstitial(job, snapshot) {
+  const entry = findEntry(snapshot, matchesRateLimitAcknowledgeControl);
+  if (!entry) return false;
+  await log(`Dismissing rate-limit interstitial via "${entry.label}"`);
+  await clickRef(job, entry.ref).catch(() => undefined);
+  await agentBrowser(job, "wait", "500").catch(() => undefined);
+  return true;
+}
 
-    const configureEntry = findEntry(
-      after,
-      (candidate) => candidate.kind === "menuitem" && candidate.label === CHATGPT_LABELS.configure && !candidate.disabled,
+async function waitForModelConfigurationRateLimitRecovery(job, state, signal, snapshot) {
+  if (!state.deadline) state.deadline = Date.now() + TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS;
+  if (!state.logged) {
+    await log(`Model configuration rate limit detected (${signal}); waiting up to ${TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS}ms for automatic recovery`);
+    state.logged = true;
+  }
+  if (snapshot && (await maybeDismissRateLimitInterstitial(job, snapshot))) {
+    await sleep(300);
+    return;
+  }
+  if (Date.now() >= state.deadline) {
+    await captureDiagnostics(job, "model-config-rate-limit-timeout");
+    throw new Error(
+      "ChatGPT kept returning a temporary rate-limit page while opening model configuration. Wait a few minutes, then retry the oracle job.",
     );
+  }
+  if (Date.now() - state.lastReloadAt >= TRANSIENT_OUTAGE_RELOAD_INTERVAL_MS) {
+    state.lastReloadAt = Date.now();
+    await agentBrowser(job, "reload").catch(() => undefined);
+    await sleep(1500);
+  }
+  await sleep(1000);
+}
 
-    if (configureEntry) {
-      await clickRef(job, configureEntry.ref);
-      await agentBrowser(job, "wait", "1200");
-      const postConfigure = await snapshotText(job);
-      if (snapshotHasModelConfigurationUi(postConfigure)) return postConfigure;
+async function openModelConfiguration(job) {
+  const rateLimitRecovery = { deadline: 0, lastReloadAt: 0, logged: false };
+  while (true) {
+    const initialSnapshot = await snapshotText(job);
+    const initialBody = await pageText(job).catch(() => "");
+    const initialRateLimitSignal = detectRateLimitSignal(`${initialSnapshot}\n${initialBody}`);
+    if (initialRateLimitSignal) {
+      await waitForModelConfigurationRateLimitRecovery(job, rateLimitRecovery, initialRateLimitSignal, initialSnapshot);
+      continue;
     }
-  }
+    if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
 
-  const openedViaDom = await openModelConfigurationViaDom(job);
-  if (openedViaDom) {
-    await agentBrowser(job, "wait", "300");
-    const afterDomOpen = await snapshotText(job);
-    if (snapshotHasModelConfigurationUi(afterDomOpen)) return afterDomOpen;
-  }
+    let sawRateLimit;
+    for (const predicate of [matchesModelConfigurationOpener]) {
+      const snapshot = await snapshotText(job);
+      const body = await pageText(job).catch(() => "");
+      const rateLimitSignal = detectRateLimitSignal(`${snapshot}\n${body}`);
+      if (rateLimitSignal) {
+        sawRateLimit = { signal: rateLimitSignal, snapshot };
+        break;
+      }
+      const entry = findEntry(snapshot, predicate);
+      if (!entry) continue;
+      await clickRef(job, entry.ref);
+      await agentBrowser(job, "wait", "800");
+      const after = await snapshotText(job);
+      const afterBody = await pageText(job).catch(() => "");
+      const afterRateLimitSignal = detectRateLimitSignal(`${after}\n${afterBody}`);
+      if (afterRateLimitSignal) {
+        sawRateLimit = { signal: afterRateLimitSignal, snapshot: after };
+        break;
+      }
+      if (snapshotHasModelConfigurationUi(after)) return after;
 
-  throw new Error("Could not open model configuration UI");
+      const configureEntry = findEntry(
+        after,
+        (candidate) => candidate.kind === "menuitem" && candidate.label === CHATGPT_LABELS.configure && !candidate.disabled,
+      );
+
+      if (configureEntry) {
+        await clickRef(job, configureEntry.ref);
+        await agentBrowser(job, "wait", "1200");
+        const postConfigure = await snapshotText(job);
+        const postConfigureBody = await pageText(job).catch(() => "");
+        const postConfigureRateLimitSignal = detectRateLimitSignal(`${postConfigure}\n${postConfigureBody}`);
+        if (postConfigureRateLimitSignal) {
+          sawRateLimit = { signal: postConfigureRateLimitSignal, snapshot: postConfigure };
+          break;
+        }
+        if (snapshotHasModelConfigurationUi(postConfigure)) return postConfigure;
+      }
+    }
+
+    if (sawRateLimit) {
+      await waitForModelConfigurationRateLimitRecovery(job, rateLimitRecovery, sawRateLimit.signal, sawRateLimit.snapshot);
+      continue;
+    }
+
+    const openedViaDom = await openModelConfigurationViaDom(job);
+    if (openedViaDom) {
+      await agentBrowser(job, "wait", "300");
+      const afterDomOpen = await snapshotText(job);
+      const afterDomBody = await pageText(job).catch(() => "");
+      const afterDomRateLimitSignal = detectRateLimitSignal(`${afterDomOpen}\n${afterDomBody}`);
+      if (afterDomRateLimitSignal) {
+        await waitForModelConfigurationRateLimitRecovery(job, rateLimitRecovery, afterDomRateLimitSignal, afterDomOpen);
+        continue;
+      }
+      if (snapshotHasModelConfigurationUi(afterDomOpen)) return afterDomOpen;
+    }
+
+    throw new Error("Could not open model configuration UI");
+  }
 }
 
 async function reopenModelConfigurationIfClosed(job, snapshot, reason) {
@@ -1386,6 +1519,8 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let lastCompletionSignature = "";
   let stableCount = 0;
   let retriedAfterFailure = false;
+  let responseRateLimitDeadline = 0;
+  let loggedResponseRateLimit = false;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -1394,10 +1529,33 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const hasRetryButton = snapshot.includes('button "Retry"');
     const copyResponseCount = (snapshot.match(/Copy response/g) || []).length;
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
+    const rateLimitSignal = detectRateLimitSignal(`${snapshot}\n${body}`);
     const messages = await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];
     const targetText = targetMessage?.text || "";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
+
+    if (rateLimitSignal) {
+      if (!responseRateLimitDeadline) {
+        responseRateLimitDeadline = Date.now() + TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS;
+      }
+      if (!loggedResponseRateLimit) {
+        await log(
+          `Response rate limit detected (${rateLimitSignal}); waiting up to ${TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS}ms before failing`,
+        );
+        loggedResponseRateLimit = true;
+      }
+      if (Date.now() < responseRateLimitDeadline) {
+        await sleep(job.config.worker.pollMs);
+        continue;
+      }
+      throw new Error(
+        "ChatGPT response remained rate-limited for several minutes. Wait a few minutes, then retry the oracle job.",
+      );
+    } else {
+      responseRateLimitDeadline = 0;
+      loggedResponseRateLimit = false;
+    }
 
     if (!hasStopStreaming && hasRetryButton && responseFailureText) {
       if (!retriedAfterFailure) {

@@ -3413,6 +3413,11 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("reopenModelConfigurationIfClosed"), "worker should reopen model configuration when ChatGPT closes selector/config surfaces mid-flow");
   assert(workerSource.includes("snapshotFamilySelectionMatches"), "worker should verify instant family selection before toggling auto-switch state");
   assert(workerSource.includes("Model configuration UI closed during"), "worker should log model configuration reopen attempts when ChatGPT collapses the UI");
+  assert(workerSource.includes("waitForModelConfigurationRateLimitRecovery"), "worker should include dedicated rate-limit recovery for model configuration UI opening");
+  assert(workerSource.includes("model-config-rate-limit-timeout"), "worker should capture diagnostics when model-configuration rate limiting persists");
+  assert(workerSource.includes("temporary rate-limit page while opening model configuration"), "worker should report model-configuration rate-limit failures explicitly instead of generic UI-open errors");
+  assert(workerSource.includes("maybeDismissRateLimitInterstitial"), "worker should try dismissing rate-limit interstitial buttons before falling back to reload/backoff");
+  assert(workerSource.includes("Dismissing rate-limit interstitial via"), "worker should log when it clicks a rate-limit acknowledgment control");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
@@ -4799,7 +4804,7 @@ async function main() {
   }
   const runningInWsl = process.platform === "linux" && (release().toLowerCase().includes("microsoft") || Boolean(process.env.WSL_DISTRO_NAME) || Boolean(process.env.WSL_INTEROP));
   if (runningInWsl) {
-    assert(DEFAULT_CONFIG.browser.runMode === "headed", "WSL oracle default run mode should prefer headed Chrome to reduce Cloudflare/login churn");
+    assert(DEFAULT_CONFIG.browser.runMode === "headless", "WSL oracle default run mode should remain headless unless explicitly configured otherwise");
   } else {
     assert(DEFAULT_CONFIG.browser.runMode === "headless", "non-WSL oracle default run mode should remain headless unless explicitly configured otherwise");
   }
