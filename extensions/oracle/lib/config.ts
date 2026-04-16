@@ -258,7 +258,7 @@ function defaultBrowserArgs(): string[] {
 }
 
 function defaultBrowserRunMode(): OracleBrowserRunMode {
-  return isRunningInWsl() ? "headed" : "headless";
+  return "headless";
 }
 
 function detectDefaultChromeExecutablePath(): string | undefined {
