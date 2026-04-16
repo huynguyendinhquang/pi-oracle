@@ -194,9 +194,11 @@ Per job:
 10. send
 11. wait for a stable conversation URL and persist `chatUrl` / `conversationId`
 12. wait for completion anchored to the current turn only
-13. persist plain-text response
-14. download any response-local artifacts directly into the job artifact directory
-15. close the isolated browser session and delete the runtime profile in `finally`
+13. extract response from the live assistant DOM subtree via structured-first parsing
+14. if structured extraction fails or does not yield target text, fall back to legacy plain-text extraction
+15. persist `response.md` as the phase-1 compatibility output (`responseFormat: "text/plain"`) and write additive rich sidecars (`response.rich.json`, `response.rich.md`, `response.references.json`) on a best-effort basis
+16. download any response-local artifacts directly into the job artifact directory
+17. close the isolated browser session and delete the runtime profile in `finally`
 
 ## Persistence model
 
@@ -308,6 +310,9 @@ ${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/
   prompt.md
   context-<job-id>.tar.zst
   response.md
+  response.rich.json
+  response.rich.md
+  response.references.json
   artifacts.json
   artifacts/
     ...downloaded files...
@@ -340,6 +345,10 @@ Important fields include:
 - `conversationId`
 - `responsePath`
 - `responseFormat` (`text/plain`)
+- `responseExtractionMode` (`structured-dom | plain-text-fallback`)
+- `markdownResponsePath`
+- `structuredResponsePath`
+- `referencesPath`
 - `artifactPaths`
 - `artifactsManifestPath`
 - `archivePath`
@@ -376,11 +385,23 @@ Important fields include:
 
 ## Response format
 
-Canonical oracle response format remains:
+Phase 1 compatibility contract remains:
 
-- `text/plain`
+- `responsePath` points to `response.md`
+- `responseFormat` remains `text/plain`
+- plain-text response is the required primary reader contract for compatibility
 
-The saved file path is currently `response.md` for continuity with earlier job layouts, but the content contract is normalized plain text for agent consumption.
+Additive rich sidecars are optional, best-effort outputs:
+
+- `response.rich.json` — structured payload extracted from the live assistant DOM subtree for the completed assistant turn
+- `response.rich.md` — markdown rendering derived from that structured payload
+- `response.references.json` — flattened link/reference metadata (absolute `href`s) derived from that same subtree
+
+Fallback semantics:
+
+- worker attempts structured DOM extraction first
+- if structured extraction fails or does not yield target text, worker falls back to legacy plain-text extraction and records `responseExtractionMode: plain-text-fallback`
+- sidecar rendering/writes are non-fatal; job still completes when `response.md` plain text is available
 
 ## ChatGPT page-state classifier
 
@@ -459,6 +480,8 @@ This deliberately avoids:
 
 Visible labels are still not trusted as authoritative filenames. They are treated primarily as display metadata.
 
+
+Artifact URL backfill from response references into `artifacts.json` is intentionally deferred in phase 1; `OracleArtifactRecord.url` remains optional and may be unset even when `response.references.json` contains matching links.
 ## Same-thread follow-ups
 
 Same-thread continuity is persisted as data, not runtime browser state.
@@ -520,6 +543,7 @@ Implemented in code for the pivot and concurrency redesign:
 - persisted job state now records explicit lifecycle phases instead of relying only on coarse statuses
 - poller notifications now use per-job notification claims rather than broad global scan serialization
 - worker now uses a structured ChatGPT page-state classifier
+- worker now extracts structured response data from the live assistant DOM with plain-text fallback and best-effort rich sidecars (`response.rich.json`, `response.rich.md`, `response.references.json`)
 - worker now downloads artifacts directly with `agent-browser download <ref> <dest>`
 - poller scans are now best-effort/non-fatal with per-session in-flight guards
 - worker heartbeats during artifact downloads, writes artifact manifests incrementally, and reopens the saved conversation before artifact capture/download
@@ -539,7 +563,7 @@ Retained from the earlier MVP:
 - stale-worker reconciliation
 - upload ordering: attach → confirm → fill → send
 - current-turn response anchoring
-- plain-text canonical response extraction
+- `response.md` + `responseFormat: "text/plain"` compatibility contract for the primary reader path
 - wake-the-agent poller integration
 - unique archive filenames per job
 - worker PID identity checks using recorded process start time
