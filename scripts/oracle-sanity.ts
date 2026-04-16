@@ -37,7 +37,7 @@ import {
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
 import { assistantSnapshotSlice, isConversationPathUrl, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
-import { buildResponseReferences, renderStructuredResponseMarkdown } from "../extensions/oracle/worker/response-format-helpers.mjs";
+import { buildResponseReferences, renderStructuredResponseMarkdown, renderStructuredResponsePlainText } from "../extensions/oracle/worker/response-format-helpers.mjs";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -3414,6 +3414,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("const structuredResult = await assistantMessagesStructured(job).then((messages) => ({ messages, ok: true })).catch((error) => ({ messages: [], ok: false, error }));"), "worker completion polling should trap structured extraction errors and continue with plain-text fallback");
   assert(workerSource.includes("Structured response extraction failed:"), "worker should log structured extraction failures even when plain-text fallback does not provide usable text");
   assert(workerSource.includes('const responseExtractionMode = structuredResult.ok && !usedPlainTextFallback ? "structured-dom" : "plain-text-fallback";'), "worker completion metadata mode should depend on structured extractor success and actual fallback-text usage");
+  assert(!workerSource.includes("&& !usedPlainTextFallback\n      && structuredTargetMessage?.structured"), "worker should preserve structured metadata even when plain-text fallback keeps response text unchanged");
   assert(workerSource.includes("responseExtractionMode: completion.responseExtractionMode"), "worker completion metadata should persist the resolved extraction mode from completion polling");
   assert(workerSource.includes("response.rich.json"), "worker should persist additive response.rich.json sidecars during phase 1");
   assert(workerSource.includes("response.rich.md"), "worker should persist additive response.rich.md sidecars during phase 1");
@@ -4666,6 +4667,30 @@ function testResponseFormatHelpers(): void {
   const references = buildResponseReferences(referenceFixture);
   assert(references.length === 1, "response format helpers should return one sidecar reference for one fixture reference");
   assert(references[0]?.href === "https://example.com/source?id=1#section", "response reference sidecar should preserve href values exactly");
+
+  const plainTextStableFixture = {
+    blocks: [
+      {
+        type: "paragraph",
+        inlines: [
+          { type: "link", kind: "inline", text: "Download", href: "https://example.com/a" },
+          { type: "text", text: " / " },
+          { type: "link", kind: "inline", text: "Download", href: "https://example.com/b" },
+        ],
+      },
+    ],
+  };
+  assert(
+    renderStructuredResponsePlainText(plainTextStableFixture) === "Download / Download",
+    "response format helpers should keep plain text stable when links differ only by href metadata",
+  );
+  const plainTextStableReferences = buildResponseReferences(plainTextStableFixture);
+  assert(plainTextStableReferences.length === 2, "response format helpers should preserve multiple href variants even when visible link text matches");
+  assert(
+    plainTextStableReferences.some((reference) => reference.href === "https://example.com/a")
+      && plainTextStableReferences.some((reference) => reference.href === "https://example.com/b"),
+    "response format helpers should preserve href metadata beyond visible link text",
+  );
 }
 
 

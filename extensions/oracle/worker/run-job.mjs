@@ -1930,7 +1930,6 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     }
     const targetText = targetMessage?.text || "";
     const responseStructured = structuredResult.ok
-      && !usedPlainTextFallback
       && structuredTargetMessage?.structured
       && typeof structuredTargetMessage.structured === "object"
       ? structuredTargetMessage.structured
