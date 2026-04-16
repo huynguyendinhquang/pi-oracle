@@ -130,6 +130,10 @@ export function formatOracleJobSummary(job, options = {}) {
     ? job.responsePath ? `response: ${job.responsePath}` : undefined
     : job.responsePath ? "response: unavailable yet" : undefined;
   const responseFormatLine = options.responseAvailable === true && job.responseFormat ? `response-format: ${job.responseFormat}` : undefined;
+  const responseExtractionModeLine = job.responseExtractionMode ? `response-extraction-mode: ${job.responseExtractionMode}` : undefined;
+  const markdownResponseLine = job.markdownResponsePath ? `markdown-response: ${job.markdownResponsePath}` : undefined;
+  const structuredResponseLine = job.structuredResponsePath ? `structured-response: ${job.structuredResponsePath}` : undefined;
+  const referencesLine = job.referencesPath ? `references: ${job.referencesPath}` : undefined;
   const latestEventLabel = latestEventRaw?.kind === "wakeup" ? "wakeup-event" : "last-event";
   return [
     `job: ${job.id}`,
@@ -148,6 +152,10 @@ export function formatOracleJobSummary(job, options = {}) {
     job.conversationId ? `conversation: ${job.conversationId}` : undefined,
     responseLine,
     responseFormatLine,
+    responseExtractionModeLine,
+    markdownResponseLine,
+    structuredResponseLine,
+    referencesLine,
     options.artifactsPath ? `artifacts: ${options.artifactsPath}` : undefined,
     typeof job.artifactFailureCount === "number" ? `artifact-failures: ${job.artifactFailureCount}` : undefined,
     options.includeWorkerLogPath === false ? undefined : job.workerLogPath ? `worker-log: ${job.workerLogPath}` : undefined,

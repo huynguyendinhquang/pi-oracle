@@ -137,8 +137,12 @@ export interface OracleJob {
   followUpToJobId?: string;
   chatUrl?: string;
   conversationId?: string;
-  responsePath?: string;
+  responsePath: string;
   responseFormat?: "text/plain";
+  responseExtractionMode?: "structured-dom" | "plain-text-fallback";
+  markdownResponsePath?: string;
+  structuredResponsePath?: string;
+  referencesPath?: string;
   artifactPaths: string[];
   artifactsManifestPath?: string;
   archivePath: string;

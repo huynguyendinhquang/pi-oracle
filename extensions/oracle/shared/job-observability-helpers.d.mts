@@ -15,7 +15,11 @@ export interface OracleJobSummaryLike {
   chatUrl?: string;
   conversationId?: string;
   responsePath?: string;
-  responseFormat?: string;
+  responseFormat?: "text/plain";
+  responseExtractionMode?: "structured-dom" | "plain-text-fallback";
+  markdownResponsePath?: string;
+  structuredResponsePath?: string;
+  referencesPath?: string;
   artifactFailureCount?: number;
   lastCleanupAt?: string;
   cleanupWarnings?: string[];

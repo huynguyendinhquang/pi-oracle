@@ -3038,6 +3038,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
   const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
+  const sharedObservabilityTypesSource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.d.mts", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
   const supportSource = await readFile(new URL("./oracle-sanity-support.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
@@ -3325,6 +3326,17 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(sharedObservabilitySource.includes("formatOracleJobSummary"), "shared observability helpers should centralize detached job summary formatting");
   assert(sharedObservabilitySource.includes("terminal-event:"), "shared observability helpers should keep terminal lifecycle events prominent in detached job summaries");
   assert(sharedObservabilitySource.includes("response: unavailable yet"), "shared observability helpers should avoid showing response paths as ready when the response file does not exist yet");
+  assert(jobsSource.includes('responseExtractionMode?: "structured-dom" | "plain-text-fallback";'), "oracle jobs should persist additive response extraction mode metadata without changing the plain-text compatibility contract");
+  assert(jobsSource.includes("markdownResponsePath?: string;"), "oracle jobs should persist additive markdown response sidecar paths when available");
+  assert(jobsSource.includes("structuredResponsePath?: string;"), "oracle jobs should persist additive structured response sidecar paths when available");
+  assert(jobsSource.includes("referencesPath?: string;"), "oracle jobs should persist additive references sidecar paths when available");
+  assert(sharedObservabilityTypesSource.includes('responseExtractionMode?: "structured-dom" | "plain-text-fallback";'), "shared observability helper types should expose additive extraction mode metadata");
+  assert(sharedObservabilityTypesSource.includes("markdownResponsePath?: string;"), "shared observability helper types should expose additive markdown response paths");
+  assert(sharedObservabilityTypesSource.includes("structuredResponsePath?: string;"), "shared observability helper types should expose additive structured response paths");
+  assert(sharedObservabilityTypesSource.includes("referencesPath?: string;"), "shared observability helper types should expose additive references paths");
+  assert(sharedObservabilitySource.includes("markdown-response:"), "shared observability summaries should surface additive markdown response paths when present");
+  assert(sharedObservabilitySource.includes("structured-response:"), "shared observability summaries should surface additive structured response paths when present");
+  assert(sharedObservabilitySource.includes("references:"), "shared observability summaries should surface additive references paths when present");
   assert(sharedProcessSource.includes("spawnDetachedNodeProcess"), "shared process helpers should centralize detached process spawning semantics for worker handoff");
   assert(!runtimeSource.includes("Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0"), "runtime admission should not treat cleanup warnings alone as live capacity blockers");
   assert(!runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should not retain leases solely because teardown leaves warnings");
@@ -4169,6 +4181,10 @@ function testSharedObservabilityHelpers(): void {
     promptPath: string;
     archivePath: string;
     workerLogPath: string;
+    responseExtractionMode?: "structured-dom" | "plain-text-fallback";
+    markdownResponsePath?: string;
+    structuredResponsePath?: string;
+    referencesPath?: string;
   };
 
   const job = markOracleJobCreated<ObservabilityFixture>({
@@ -4185,6 +4201,10 @@ function testSharedObservabilityHelpers(): void {
     responsePath: "/tmp/response.md",
     responseFormat: "text/plain",
     workerLogPath: "/tmp/worker.log",
+    responseExtractionMode: "structured-dom",
+    markdownResponsePath: "/tmp/response.rich.md",
+    structuredResponsePath: "/tmp/response.rich.json",
+    referencesPath: "/tmp/response.references.json",
   }, {
     at: "2026-01-01T00:00:00.000Z",
     source: "oracle:test",
@@ -4198,6 +4218,7 @@ function testSharedObservabilityHelpers(): void {
   });
   assert(summary.includes("queue-position: 2 of 3 global") && summary.includes("last-event:"), "shared observability helpers should include queue position and latest lifecycle breadcrumbs in non-terminal job summaries");
   assert(summary.includes("worker-log: /tmp/worker.log") && summary.includes("Preview body") && summary.includes("response: /tmp/response.md"), "shared observability helpers should include worker log paths, visible response paths, and optional response previews");
+  assert(summary.includes("response-extraction-mode: structured-dom") && summary.includes("markdown-response: /tmp/response.rich.md") && summary.includes("structured-response: /tmp/response.rich.json") && summary.includes("references: /tmp/response.references.json"), "shared observability helpers should surface additive rich-response metadata lines when those sidecar paths are available");
 
   const freshHeartbeatSummary = formatOracleJobSummary(transitionOracleJobPhase(job, "awaiting_response", {
     at: "2026-01-01T00:00:05.000Z",
