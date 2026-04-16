@@ -192,18 +192,90 @@ async function testOracleReadUsesConfiguredJobsDir(config: OracleConfig): Promis
   const expectedArtifactsPath = `${getJobDir(jobId)}/artifacts`;
   assert(!expectedArtifactsPath.startsWith(`/tmp/oracle-${jobId}/artifacts`), "sanity runner should use a non-default jobs dir for oracle read path coverage");
 
+  const richResponseDir = join(getJobDir(jobId), "artifacts");
+  const markdownResponsePath = join(richResponseDir, "response.rich.md");
+  const structuredResponsePath = join(richResponseDir, "response.rich.json");
+  const referencesPath = join(richResponseDir, "response.references.json");
+  await mkdir(richResponseDir, { recursive: true, mode: 0o700 });
+  await writeFile(markdownResponsePath, "# rich markdown sidecar\n", { mode: 0o600 });
+  await writeFile(structuredResponsePath, "{\"kind\":\"structured-sidecar\"}\n", { mode: 0o600 });
+  await writeFile(referencesPath, "[{\"title\":\"ref\"}]\n", { mode: 0o600 });
+  await updateJob(jobId, (job) => ({
+    ...job,
+    markdownResponsePath,
+    structuredResponsePath,
+    referencesPath,
+  }));
+  const persisted = readJob(jobId);
+  assert(persisted?.responsePath, "oracle read rich-path coverage should retain response path for plain-text preview");
+
   try {
     const result = await readTool.execute!("oracle-read-path-test", { jobId }, undefined, () => { }, createExtensionCtx(sessionManager)) as { content?: Array<{ text?: string }> };
     const text = result.content?.[0]?.text;
     assert(typeof text === "string", "oracle read should return text output");
+    assert(text.includes(`response: ${persisted.responsePath}`), "oracle read should continue showing the saved response path line");
     assert(text.includes(`artifacts: ${expectedArtifactsPath}`), "oracle read should report the configured jobs dir artifacts path");
     assert(!text.includes(`artifacts: /tmp/oracle-${jobId}/artifacts`), "oracle read should not hard-code the default /tmp oracle artifacts path");
+    assert(text.includes(`markdown-response: ${markdownResponsePath}`), "oracle read should surface additive markdown sidecar paths");
+    assert(text.includes(`structured-response: ${structuredResponsePath}`), "oracle read should surface additive structured sidecar paths");
+    assert(text.includes(`references: ${referencesPath}`), "oracle read should surface additive references sidecar paths");
+    assert(text.includes("fixture oracle response"), "oracle read should keep plain-text response preview behavior unchanged");
+    assert(!text.includes("structured-sidecar"), "oracle read plain-text preview should still read from response.md, not structured sidecar payloads");
   } finally {
     await rm(fakeWorkerPath, { force: true });
     await cleanupJob(jobId);
   }
 }
 
+async function testOracleStatusSurfacesRichAssetPaths(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-status-rich-worker-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleCommands(pi as unknown as ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  const statusCommand = pi.commands.get("oracle-status");
+  assert(statusCommand, "oracle status command should register for rich-path coverage");
+
+  const sessionManager = createPersistedSessionManager("oracle-status-rich-paths");
+  const sessionFile = sessionManager.getSessionFile();
+  assert(sessionFile, "oracle status rich-path test should persist a session file");
+  const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
+  const expectedArtifactsPath = `${getJobDir(jobId)}/artifacts`;
+  const markdownResponsePath = join(expectedArtifactsPath, "response.rich.md");
+  const structuredResponsePath = join(expectedArtifactsPath, "response.rich.json");
+  const referencesPath = join(expectedArtifactsPath, "response.references.json");
+  await mkdir(expectedArtifactsPath, { recursive: true, mode: 0o700 });
+  await writeFile(markdownResponsePath, "# status rich markdown\n", { mode: 0o600 });
+  await writeFile(structuredResponsePath, "{\"kind\":\"status-sidecar\"}\n", { mode: 0o600 });
+  await writeFile(referencesPath, "[{\"title\":\"status-ref\"}]\n", { mode: 0o600 });
+  await updateJob(jobId, (job) => ({
+    ...job,
+    markdownResponsePath,
+    structuredResponsePath,
+    referencesPath,
+  }));
+  const persisted = readJob(jobId);
+  assert(persisted?.responsePath, "oracle status rich-path coverage should retain response path");
+
+  const ui = createUiStub();
+  const ctx = createCommandCtx(sessionManager, ui);
+
+  try {
+    await statusCommand!.handler(jobId, ctx);
+    const statusNotification = ui.notifications.at(-1)?.message;
+    assert(typeof statusNotification === "string", "oracle status should publish a UI notification summary");
+    assert(statusNotification.includes(`response: ${persisted.responsePath}`), "oracle status should continue showing the saved response path line");
+    assert(statusNotification.includes(`artifacts: ${expectedArtifactsPath}`), "oracle status should continue showing artifacts path line");
+    assert(statusNotification.includes(`markdown-response: ${markdownResponsePath}`), "oracle status should surface additive markdown sidecar paths");
+    assert(statusNotification.includes(`structured-response: ${structuredResponsePath}`), "oracle status should surface additive structured sidecar paths");
+    assert(statusNotification.includes(`references: ${referencesPath}`), "oracle status should surface additive references sidecar paths");
+    assert(!statusNotification.includes("fixture oracle response"), "oracle status should remain metadata-only and not include plain-text response preview");
+  } finally {
+    await rm(fakeWorkerPath, { force: true });
+    await cleanupJob(jobId);
+  }
+}
 async function testManualReadsSettleWakeupRetries(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const fakeWorkerPath = join(tmpdir(), `oracle-sanity-manual-read-worker-${randomUUID()}.mjs`);
@@ -1305,6 +1377,7 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testMarkJobNotifiedRejectsStaleClaimant(config);
   await testOracleSubmitRejectsMissingSessionIdentity();
   await testOracleReadUsesConfiguredJobsDir(config);
+  await testOracleStatusSurfacesRichAssetPaths(config);
   await testManualReadsSettleWakeupRetries(config);
   await testPreSendStatusObservationDoesNotSuppressFirstWakeup(config);
   await testPollerNotification(config);
