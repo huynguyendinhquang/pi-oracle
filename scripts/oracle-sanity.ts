@@ -3408,6 +3408,14 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("child.matches('blockquote')"), "worker structured extraction should preserve blockquotes");
   assert(workerSource.includes("child.matches('table')"), "worker structured extraction should preserve simple tables");
   assert(workerSource.includes("kind === 'citation' || kind === 'source'"), "worker structured extraction should preserve citation/source anchors as references");
+  const structuredNormalizeRegexEscaped = String.raw`replace(/\\r\\n?/g, '\\n')`;
+  const structuredNormalizeRegexUnescaped = String.raw`replace(/\r\n?/g, '\n')`;
+  const structuredCodeTrimRegexEscaped = String.raw`replace(/\\n+$/g, '')`;
+  const structuredCodeTrimRegexUnescaped = String.raw`replace(/\n+$/g, '')`;
+  assert(workerSource.includes(structuredNormalizeRegexEscaped), "worker structured extraction page-script should double-escape normalize regex literals before eval serialization");
+  assert(workerSource.includes(structuredCodeTrimRegexEscaped), "worker structured extraction page-script should double-escape code-trim regex literals before eval serialization");
+  assert(!workerSource.includes(structuredNormalizeRegexUnescaped), "worker structured extraction page-script should avoid unescaped normalize regex literals that break runtime eval parsing");
+  assert(!workerSource.includes(structuredCodeTrimRegexUnescaped), "worker structured extraction page-script should avoid unescaped code-trim regex literals that break runtime eval parsing");
   assert(workerSource.includes("const fallbackMessages = await assistantMessages(job);"), "worker completion polling should retain assistantMessages plain-text fallback path");
   assert(workerSource.includes("const fallbackMessage = fallbackMessages[baselineAssistantCount];") && workerSource.includes("if (fallbackMessage?.text) {"), "worker completion polling should only switch to plain-text fallback when the fallback target message has usable text");
   assert(workerSource.includes("const targetText = targetMessage?.text || \"\";"), "worker completion detection should continue using plain text derived from the target response");

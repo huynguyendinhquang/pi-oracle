@@ -1611,7 +1611,7 @@ async function assistantMessagesStructured(job) {
     toJsonScript(`
       const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
         .filter((el) => (el.textContent || '').trim() === 'ChatGPT said:');
-      const normalize = (value) => String(value || '').replace(/\r\n?/g, '\n');
+      const normalize = (value) => String(value || '').replace(/\\r\\n?/g, '\\n');
       const compact = (value) => normalize(value).replace(/[ \t]+/g, ' ').trim();
       const renderText = (node) => {
         if (!node) return '';
@@ -1720,7 +1720,7 @@ async function assistantMessagesStructured(job) {
       };
       const extractCodeBlock = (node) => {
         const codeNode = node?.tagName === 'PRE' ? node.querySelector('code') || node : node;
-        const text = normalize(codeNode?.textContent || '').replace(/\n+$/g, '');
+        const text = normalize(codeNode?.textContent || '').replace(/\\n+$/g, '');
         if (!text.trim()) return undefined;
         const language = detectCodeLanguage(node);
         return language ? { type: 'code', language, text } : { type: 'code', text };
