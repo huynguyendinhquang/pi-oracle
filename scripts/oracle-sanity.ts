@@ -3331,6 +3331,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("markdownResponsePath?: string;"), "oracle jobs should persist additive markdown response sidecar paths when available");
   assert(jobsSource.includes("structuredResponsePath?: string;"), "oracle jobs should persist additive structured response sidecar paths when available");
   assert(jobsSource.includes("referencesPath?: string;"), "oracle jobs should persist additive references sidecar paths when available");
+  assert(jobsSource.includes('ORACLE_RESPONSE_FILE_NAME = "response.md"'), "oracle jobs should centralize response filename constants for compatibility sidecars");
   assert(sharedObservabilityTypesSource.includes('responseExtractionMode?: "structured-dom" | "plain-text-fallback";'), "shared observability helper types should expose additive extraction mode metadata");
   assert(sharedObservabilityTypesSource.includes("markdownResponsePath?: string;"), "shared observability helper types should expose additive markdown response paths");
   assert(sharedObservabilityTypesSource.includes("structuredResponsePath?: string;"), "shared observability helper types should expose additive structured response paths");
@@ -3417,6 +3418,10 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("response.rich.json"), "worker should persist additive response.rich.json sidecars during phase 1");
   assert(workerSource.includes("response.rich.md"), "worker should persist additive response.rich.md sidecars during phase 1");
   assert(workerSource.includes("response.references.json"), "worker should persist additive response.references.json sidecars during phase 1");
+  assert(workerSource.includes("renderStructuredResponseMarkdown") && workerSource.includes("buildResponseReferences"), "worker should render markdown/references sidecars from shared structured-response helpers");
+  assert(workerSource.includes("const sidecarPaths = await persistResponseFiles(currentJob, completion);"), "worker completion path should persist rich sidecars through a dedicated helper before artifact download");
+  assert(workerSource.includes("Rich sidecar write warning"), "worker should log rich sidecar write failures as non-fatal warnings");
+  assert(workerSource.includes("markdownResponsePath: sidecarPaths.markdownResponsePath") && workerSource.includes("structuredResponsePath: sidecarPaths.structuredResponsePath") && workerSource.includes("referencesPath: sidecarPaths.referencesPath"), "worker should only persist additive rich metadata paths from successfully written sidecars");
   assert(workerSource.includes('responseFormat: "text/plain"'), "worker should keep text/plain as the compatibility response format during phase 1");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");

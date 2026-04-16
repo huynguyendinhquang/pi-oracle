@@ -50,6 +50,10 @@ const ORACLE_FAILED_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
 export const ORACLE_JOBS_DIR_ENV = "PI_ORACLE_JOBS_DIR";
 const ORACLE_JOBS_DIR = process.env[ORACLE_JOBS_DIR_ENV]?.trim() || DEFAULT_ORACLE_JOBS_DIR;
+export const ORACLE_RESPONSE_FILE_NAME = "response.md";
+export const ORACLE_STRUCTURED_RESPONSE_FILE_NAME = "response.rich.json";
+export const ORACLE_MARKDOWN_RESPONSE_FILE_NAME = "response.rich.md";
+export const ORACLE_REFERENCES_RESPONSE_FILE_NAME = "response.references.json";
 
 export function isActiveOracleJob(job: Pick<OracleJob, "status">): boolean {
   return ACTIVE_ORACLE_JOB_STATUSES.includes(job.status);
@@ -913,7 +917,7 @@ export async function createJob(
   const workerLogPath = join(logsDir, "worker.log");
   const promptPath = join(jobDir, "prompt.md");
   const archivePath = join(jobDir, `context-${id}.tar.zst`);
-  const responsePath = join(jobDir, "response.md");
+  const responsePath = join(jobDir, ORACLE_RESPONSE_FILE_NAME);
   const reasoningPath = join(jobDir, "reasoning.md");
   const artifactsManifestPath = join(jobDir, "artifacts.json");
   const projectId = getProjectId(cwd);

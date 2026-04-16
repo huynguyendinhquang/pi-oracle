@@ -33,7 +33,7 @@ import {
   autoSwitchToThinkingSelectionVisible,
 } from "./chatgpt-ui-helpers.mjs";
 import { assistantSnapshotSlice, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
-import { renderStructuredResponsePlainText } from "./response-format-helpers.mjs";
+import { buildResponseReferences, renderStructuredResponseMarkdown, renderStructuredResponsePlainText } from "./response-format-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -201,6 +201,65 @@ async function log(message) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+async function writeRichResponseSidecar(path, content, label) {
+  try {
+    await secureWriteText(path, content);
+    return true;
+  } catch (error) {
+    await log(`Rich sidecar write warning (${label}): ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+async function persistResponseFiles(job, completion) {
+  const trimmedResponse = typeof completion?.responseText === "string" ? completion.responseText.trim() : "";
+  await secureWriteText(job.responsePath, `${trimmedResponse}\n`);
+
+  const sidecarPaths = {
+    markdownResponsePath: undefined,
+    structuredResponsePath: undefined,
+    referencesPath: undefined,
+  };
+
+  const responseStructured = completion?.responseStructured;
+  if (!responseStructured || typeof responseStructured !== "object") return sidecarPaths;
+
+  const sidecarDir = dirname(job.responsePath);
+
+  try {
+    const structuredResponsePath = join(sidecarDir, STRUCTURED_RESPONSE_JSON_FILE);
+    const structuredPayload = `${JSON.stringify(responseStructured, null, 2)}\n`;
+    if (await writeRichResponseSidecar(structuredResponsePath, structuredPayload, STRUCTURED_RESPONSE_JSON_FILE)) {
+      sidecarPaths.structuredResponsePath = structuredResponsePath;
+    }
+  } catch (error) {
+    await log(`Rich sidecar write warning (${STRUCTURED_RESPONSE_JSON_FILE}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  try {
+    const markdownResponsePath = join(sidecarDir, STRUCTURED_RESPONSE_MARKDOWN_FILE);
+    const markdownBody = renderStructuredResponseMarkdown(responseStructured).trim();
+    if (await writeRichResponseSidecar(markdownResponsePath, `${markdownBody}\n`, STRUCTURED_RESPONSE_MARKDOWN_FILE)) {
+      sidecarPaths.markdownResponsePath = markdownResponsePath;
+    }
+  } catch (error) {
+    await log(`Rich sidecar write warning (${STRUCTURED_RESPONSE_MARKDOWN_FILE}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  try {
+    const referencesPath = join(sidecarDir, STRUCTURED_RESPONSE_REFERENCES_FILE);
+    const references = buildResponseReferences(responseStructured);
+    if (await writeRichResponseSidecar(referencesPath, `${JSON.stringify(references, null, 2)}\n`, STRUCTURED_RESPONSE_REFERENCES_FILE)) {
+      sidecarPaths.referencesPath = referencesPath;
+    }
+  } catch (error) {
+    await log(`Rich sidecar write warning (${STRUCTURED_RESPONSE_REFERENCES_FILE}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return sidecarPaths;
+}
+
 
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -1870,6 +1929,12 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       }
     }
     const targetText = targetMessage?.text || "";
+    const responseStructured = structuredResult.ok
+      && !usedPlainTextFallback
+      && structuredTargetMessage?.structured
+      && typeof structuredTargetMessage.structured === "object"
+      ? structuredTargetMessage.structured
+      : undefined;
     const responseExtractionMode = structuredResult.ok && !usedPlainTextFallback ? "structured-dom" : "plain-text-fallback";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
 
@@ -1979,7 +2044,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       else stableCount = 1;
       lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
-        return { responseIndex: baselineAssistantCount, responseText: targetText, responseExtractionMode };
+        return { responseIndex: baselineAssistantCount, responseText: targetText, responseExtractionMode, responseStructured };
       }
     } else {
       lastCompletionSignature = "";
@@ -2382,7 +2447,7 @@ async function run() {
       message: "Extracting the completed response body.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
-    await secureWriteText(currentJob.responsePath, `${completion.responseText.trim()}\n`);
+    const sidecarPaths = await persistResponseFiles(currentJob, completion);
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "downloading_artifacts", {
       at: new Date().toISOString(),
       source: "oracle:worker",
@@ -2402,6 +2467,9 @@ async function run() {
       patch: {
         responsePath: currentJob.responsePath,
         responseFormat: "text/plain",
+        markdownResponsePath: sidecarPaths.markdownResponsePath,
+        structuredResponsePath: sidecarPaths.structuredResponsePath,
+        referencesPath: sidecarPaths.referencesPath,
         artifactFailureCount,
         responseExtractionMode: completion.responseExtractionMode,
         cleanupPending: true,
