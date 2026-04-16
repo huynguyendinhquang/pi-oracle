@@ -37,6 +37,7 @@ import {
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
 import { assistantSnapshotSlice, isConversationPathUrl, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
+import { buildResponseReferences, renderStructuredResponseMarkdown } from "../extensions/oracle/worker/response-format-helpers.mjs";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -4609,6 +4610,45 @@ function testChatGptFlowHelpers(): void {
   assert(firstStableState.stableCount === 1 && secondStableState.stableCount === 2 && resetStableState.stableCount === 1, "stable-value helpers should increment matching observations and reset on change");
 }
 
+function testResponseFormatHelpers(): void {
+  const inlineLinkFixture = {
+    blocks: [
+      {
+        type: "paragraph",
+        inlines: [
+          { type: "text", text: "See " },
+          { type: "link", text: "OpenAI", href: "https://openai.com/docs" },
+          { type: "text", text: " for details." },
+        ],
+      },
+    ],
+  };
+  assert(
+    renderStructuredResponseMarkdown(inlineLinkFixture) === "See [OpenAI](https://openai.com/docs) for details.",
+    "response format helpers should convert inline links into markdown link syntax",
+  );
+
+  const codeFenceFixture = {
+    blocks: [
+      { type: "code", language: "ts", text: "const answer = 42;\nconsole.log(answer);" },
+    ],
+  };
+  assert(
+    renderStructuredResponseMarkdown(codeFenceFixture) === "```ts\nconst answer = 42;\nconsole.log(answer);\n```",
+    "response format helpers should preserve fenced markdown code blocks with language hints",
+  );
+
+  const referenceFixture = {
+    references: [
+      { kind: "citation", label: "[1]", text: "Source", href: "https://example.com/source?id=1#section" },
+    ],
+  };
+  const references = buildResponseReferences(referenceFixture);
+  assert(references.length === 1, "response format helpers should return one sidecar reference for one fixture reference");
+  assert(references[0]?.href === "https://example.com/source?id=1#section", "response reference sidecar should preserve href values exactly");
+}
+
+
 async function testSanityRunnerIsolation(): Promise<void> {
   const runnerSource = await readFile(new URL("./oracle-sanity-runner.mjs", import.meta.url), "utf8");
   assert(runnerSource.includes("/tmp/pi-oracle-sanity-state-"), "sanity runner should force an isolated oracle state dir");
@@ -4928,6 +4968,7 @@ async function main() {
   testChatGptUiHelpers();
   testAuthFlowHelpers();
   testChatGptFlowHelpers();
+  testResponseFormatHelpers();
   testArtifactCandidateHeuristics();
   await testPollerHostSafety();
   await resetOracleStateDir().catch(() => undefined);
