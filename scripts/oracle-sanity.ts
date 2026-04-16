@@ -3408,6 +3408,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("child.matches('table')"), "worker structured extraction should preserve simple tables");
   assert(workerSource.includes("kind === 'citation' || kind === 'source'"), "worker structured extraction should preserve citation/source anchors as references");
   assert(workerSource.includes("const fallbackMessages = await assistantMessages(job);"), "worker completion polling should retain assistantMessages plain-text fallback path");
+  assert(workerSource.includes("targetMessage = fallbackMessages[baselineAssistantCount] || targetMessage;"), "worker completion polling should prefer plain-text fallback messages when structured extraction yields an empty target text");
   assert(workerSource.includes("const targetText = targetMessage?.text || \"\";"), "worker completion detection should continue using plain text derived from the target response");
   assert(workerSource.includes("response.rich.json"), "worker should persist additive response.rich.json sidecars during phase 1");
   assert(workerSource.includes("response.rich.md"), "worker should persist additive response.rich.md sidecars during phase 1");

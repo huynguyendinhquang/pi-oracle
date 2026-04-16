@@ -1855,7 +1855,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     let targetMessage = structuredMessages[baselineAssistantCount];
     if (!targetMessage?.text) {
       const fallbackMessages = await assistantMessages(job);
-      targetMessage = targetMessage || fallbackMessages[baselineAssistantCount];
+      targetMessage = fallbackMessages[baselineAssistantCount] || targetMessage;
     }
     const targetText = targetMessage?.text || "";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
