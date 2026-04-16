@@ -73,6 +73,8 @@ const RESPONSE_DISCONNECT_RECOVERY_ATTEMPTS = 2;
 const CHALLENGE_RECOVERY_TIMEOUT_MS = 60_000;
 const TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS = 3 * 60_000;
 const TRANSIENT_OUTAGE_RELOAD_INTERVAL_MS = 20_000;
+const RESPONSE_RATE_LIMIT_DEFER_MS = 60_000;
+const RESPONSE_RATE_LIMIT_MAX_DEFER_ATTEMPTS = 3;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser", "/usr/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
@@ -310,6 +312,28 @@ async function cleanupRuntime(job) {
     return warnings;
   } finally {
     cleaningUpRuntime = false;
+  }
+}
+
+async function suspendRuntimeForDeferredResponse(job) {
+  await closeBrowser(job);
+  await rm(job.runtimeProfileDir, { recursive: true, force: true });
+  await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId).catch(() => undefined);
+}
+
+async function waitForRuntimeLeaseForDeferredResponse(job) {
+  while (true) {
+    await heartbeat();
+    if (await tryAcquireRuntimeLeaseForJob(job, new Date().toISOString())) return;
+    await sleep(1_000);
+  }
+}
+
+async function waitWithHeartbeats(ms) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    await heartbeat();
+    await sleep(Math.min(5_000, Math.max(250, deadline - Date.now())));
   }
 }
 
@@ -1521,6 +1545,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let retriedAfterFailure = false;
   let responseRateLimitDeadline = 0;
   let loggedResponseRateLimit = false;
+  let responseRateLimitDeferAttempts = 0;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -1541,7 +1566,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       }
       if (!loggedResponseRateLimit) {
         await log(
-          `Response rate limit detected (${rateLimitSignal}); waiting up to ${TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS}ms before failing`,
+          `Response rate limit detected (${rateLimitSignal}); waiting up to ${TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS}ms before deferring browser runtime`,
         );
         loggedResponseRateLimit = true;
       }
@@ -1549,9 +1574,46 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
         await sleep(job.config.worker.pollMs);
         continue;
       }
-      throw new Error(
-        "ChatGPT response remained rate-limited for several minutes. Wait a few minutes, then retry the oracle job.",
-      );
+      if (responseRateLimitDeferAttempts >= RESPONSE_RATE_LIMIT_MAX_DEFER_ATTEMPTS) {
+        throw new Error(
+          "ChatGPT response remained rate-limited for several minutes. Wait a few minutes, then retry the oracle job.",
+        );
+      }
+      responseRateLimitDeferAttempts += 1;
+      responseRateLimitDeadline = 0;
+      loggedResponseRateLimit = false;
+      lastCompletionSignature = "";
+      stableCount = 0;
+      await log(`Response remained rate-limited; closing runtime and retrying later (${responseRateLimitDeferAttempts}/${RESPONSE_RATE_LIMIT_MAX_DEFER_ATTEMPTS})`);
+      currentJob = await mutateJob((latest) => transitionOracleJobPhase(latest, "awaiting_response", {
+        at: new Date().toISOString(),
+        source: "oracle:worker",
+        message: `Response rate-limited; runtime released and harvest will retry later (${responseRateLimitDeferAttempts}/${RESPONSE_RATE_LIMIT_MAX_DEFER_ATTEMPTS}).`,
+        patch: { heartbeatAt: new Date().toISOString() },
+      }));
+      job = currentJob;
+      await suspendRuntimeForDeferredResponse(job);
+      await promoteQueuedJobsAfterCleanup().catch(() => undefined);
+      await waitWithHeartbeats(RESPONSE_RATE_LIMIT_DEFER_MS);
+      await waitForRuntimeLeaseForDeferredResponse(job);
+      const seedGeneration = await cloneSeedProfileToRuntime(job);
+      currentJob = await mutateJob((latest) => transitionOracleJobPhase(latest, "launching_browser", {
+        at: new Date().toISOString(),
+        source: "oracle:worker",
+        message: "Reopening the saved ChatGPT thread after deferred rate-limit wait.",
+        patch: { seedGeneration, heartbeatAt: new Date().toISOString() },
+      }));
+      job = currentJob;
+      await launchBrowser(job, job.chatUrl || job.config.browser.chatUrl);
+      currentJob = await mutateJob((latest) => transitionOracleJobPhase(latest, "awaiting_response", {
+        at: new Date().toISOString(),
+        source: "oracle:worker",
+        message: "Resuming response harvest from the saved ChatGPT thread.",
+        patch: { heartbeatAt: new Date().toISOString() },
+      }));
+      job = currentJob;
+      await agentBrowser(job, "wait", "1500").catch(() => undefined);
+      continue;
     } else {
       responseRateLimitDeadline = 0;
       loggedResponseRateLimit = false;
