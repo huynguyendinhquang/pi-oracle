@@ -139,16 +139,17 @@ response.references.json
 - [ ] Run: `npm run sanity:oracle`
 - [ ] Run: `npm run typecheck:worker-helpers`
 
-### Task 7: Preserve href/reference metadata and populate artifact URLs when obvious
+### Task 7: Preserve href/reference metadata first; keep artifact URL backfill optional
 
 **Files:**
 - Modify: `extensions/oracle/worker/run-job.mjs`
-- Modify: `extensions/oracle/lib/jobs.ts`
+- Optional modify: `extensions/oracle/lib/jobs.ts`
 - Test: `scripts/oracle-sanity.ts`
 
-- [ ] When response-local artifact candidates come from anchors, populate `OracleArtifactRecord.url` if the href is stable and meaningful.
-- [ ] Keep inline references distinct from downloaded artifacts in the structured response payload.
+- [ ] Preserve inline link/reference metadata in the structured response payload even when the plain-text response stays unchanged.
 - [ ] Add sanity coverage proving that visible link text alone is not the only preserved output.
+- [ ] Only if the anchor-origin mapping is obvious and low-risk, populate `OracleArtifactRecord.url` for artifact candidates that come directly from stable anchors.
+- [ ] If artifact URL backfill starts dragging in unrelated artifact-pipeline changes, stop and defer that part without blocking the core response-format rollout.
 - [ ] Run: `npm run sanity:oracle`
 
 ### Task 8: Surface rich assets in read/status output

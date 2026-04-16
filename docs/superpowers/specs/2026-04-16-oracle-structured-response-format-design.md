@@ -80,12 +80,14 @@ Recommended normalized shape:
 
 The worker should derive this from the live DOM subtree, not from snapshots. Snapshots remain a side channel for completion heuristics and debugging only.
 
+In phase 1, this payload is the internal richer source for additive sidecars, not a replacement public contract. Existing callers should continue using the plain-text response path unless they explicitly opt in to the rich sidecars.
+
 ### 3. Persist additive sidecars, not a breaking replacement
 
 Phase 1 should write these files under the job directory:
 - `response.md` — legacy plain-text response, unchanged role
 - `response.rich.md` — best-effort markdown serialization
-- `response.rich.json` — canonical structured payload
+- `response.rich.json` — internal canonical structured payload for phase 1 sidecars
 - `response.references.json` — flattened link/reference sidecar for fast inspection
 
 Why additive:
@@ -104,6 +106,8 @@ Fallback is required at two levels:
 
 2. **Derived markdown/reference fallback**
    - If structured payload exists but markdown rendering fails, still save plain text plus structured JSON if safe.
+   - If structured extraction succeeds but markdown/reference rendering is partial, persist `response.rich.json` and `response.md` anyway.
+   - Treat markdown/reference sidecars as best-effort non-fatal outputs.
    - Missing rich sidecars should not fail the whole job.
 
 Record the mode explicitly in job metadata, e.g.:
@@ -123,7 +127,7 @@ Rules:
 - absolutize relative `href`/`src` against `document.baseURI`
 - preserve DOM order for inline links/references
 - keep citation links distinct from downloadable artifacts
-- populate `OracleArtifactRecord.url` when an artifact candidate originates from an anchor with a stable href
+- keep artifact URL backfill optional in phase 1; only populate `OracleArtifactRecord.url` when the anchor-origin mapping is obvious and does not tangle with unrelated artifact-pipeline logic
 
 ### 6. File and metadata changes
 
