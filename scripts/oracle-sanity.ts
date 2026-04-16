@@ -31,6 +31,7 @@ import {
   buildAssistantCompletionSignature,
   deriveAssistantCompletionSignature,
   snapshotCanSafelySkipModelConfiguration,
+  snapshotHasModelConfigurationUi,
   snapshotStronglyMatchesRequestedModel,
   snapshotWeaklyMatchesRequestedModel,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
@@ -3409,6 +3410,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('if (probe?.domLoginCta) {'), "worker readiness checks should refuse public login CTA shells instead of proceeding to model selection");
   assert(workerSource.includes("clickModelFamilyControlViaDom"), "worker should have a DOM-driven fallback for model family controls when snapshot matching misses current ChatGPT UI variants");
   assert(workerSource.includes("openModelConfigurationViaDom"), "worker should have a DOM-driven fallback for opening the model configuration UI when ref-click opening misses current ChatGPT UI variants");
+  assert(workerSource.includes("reopenModelConfigurationIfClosed"), "worker should reopen model configuration when ChatGPT closes selector/config surfaces mid-flow");
+  assert(workerSource.includes("Model configuration UI closed during"), "worker should log model configuration reopen attempts when ChatGPT collapses the UI");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
@@ -4309,6 +4312,44 @@ function testChatGptUiHelpers(): void {
   assert(
     !snapshotWeaklyMatchesRequestedModel(topMenuProSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
     "top-level family menus should not weakly verify the wrong family just because multiple family labels are visible",
+  );
+
+  const topMenuModelSelectorSnapshot = [
+    '- button "Model selector" [expanded=true, ref=e230]',
+    '- menuitemradio "Instant" [checked=false, ref=e231]',
+    '- menuitemradio "Thinking" [checked=false, ref=e232]',
+    '- menuitemradio "Pro" [checked=false, ref=e233]',
+    '- menuitem "Configure..." [ref=e234]',
+  ].join("\n");
+  assert(
+    !snapshotHasModelConfigurationUi(topMenuModelSelectorSnapshot),
+    "top-level model-selector menus should not be treated as the model configuration dialog",
+  );
+
+  const intelligenceDialogSnapshot = [
+    '- heading "Intelligence" [level=2, ref=e240]',
+    '- button "Close" [ref=e241]',
+    '- radio "Instant" [checked=true, ref=e242]',
+    '- radio "Thinking" [checked=false, ref=e243]',
+    '- radio "Pro" [checked=false, ref=e244]',
+    '- combobox "Thinking effort" [expanded=false, ref=e245]: Standard',
+    '- switch "Auto-switch to Thinking" [checked=true, ref=e246]',
+  ].join("\n");
+  assert(
+    snapshotHasModelConfigurationUi(intelligenceDialogSnapshot),
+    "intelligence dialog snapshots should be detected as model configuration UI",
+  );
+
+  const proConfigureWithThinkingResidueSnapshot = [
+    '- radio "Instant" [checked=false, ref=e250]',
+    '- radio "Thinking" [checked=false, ref=e251]',
+    '- radio "Pro" [checked=true, ref=e252]',
+    '- combobox "Pro thinking effort" [expanded=false, ref=e253]: Standard',
+    '- button "Extended thinking, click to remove" [ref=e254]',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(proConfigureWithThinkingResidueSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "pro configure snapshots should not verify extended pro from residual extended-thinking chips when pro effort remains Standard",
   );
 
   const instantAutoSwitchOnSnapshot = [

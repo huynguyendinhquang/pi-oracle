@@ -186,19 +186,32 @@ function selectionMatchesChipSelection(selection, chipSelection) {
   return selection.autoSwitchToThinking !== true;
 }
 
-export function effortSelectionVisible(snapshot, effortLabel) {
+export function effortSelectionVisible(snapshot, effortLabel, family) {
   if (!effortLabel) return true;
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
   const normalizedEffort = effortLabel.toLowerCase();
+  const normalizedFamily = typeof family === "string" ? family.toLowerCase() : undefined;
+  const expectedComboboxLabel = normalizedFamily === "thinking"
+    ? THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase()
+    : normalizedFamily === "pro"
+      ? PRO_THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase()
+      : undefined;
   return entries.some((entry) => {
     if (entry.disabled) return false;
-    if (entry.kind === "combobox" && normalizeText(entry.value).toLowerCase() === normalizedEffort) return true;
+    if (entry.kind === "combobox" && normalizeText(entry.value).toLowerCase() === normalizedEffort) {
+      if (!expectedComboboxLabel) return true;
+      return normalizeText(entry.label).toLowerCase() === expectedComboboxLabel;
+    }
     const chipSelection = entry.kind === "button" ? parseComposerChipSelection(entry.label) : undefined;
-    if (chipSelection?.effort === normalizedEffort) return true;
+    if (chipSelection?.effort === normalizedEffort) {
+      return !normalizedFamily || chipSelection.modelFamily === normalizedFamily;
+    }
     if (entry.kind !== "button") return false;
     const label = normalizeChipLabel(entry.label).toLowerCase();
-    return label === normalizedEffort || label === `${normalizedEffort} thinking` || label === `${normalizedEffort} pro`;
+    if (label === normalizedEffort) return true;
+    if (!normalizedFamily) return label === `${normalizedEffort} thinking` || label === `${normalizedEffort} pro`;
+    return label === `${normalizedEffort} ${normalizedFamily}`;
   });
 }
 
@@ -217,19 +230,30 @@ export function thinkingChipVisible(snapshot) {
 export function snapshotHasModelConfigurationUi(snapshot) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
-  const visibleFamilies = new Set(
-    entries
-      .filter((entry) => entry.kind === "button" && typeof entry.label === "string")
-      .flatMap((entry) =>
-        /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])
-          .filter((family) => matchesModelFamilyLabel(entry.label, family)),
-      ),
+  const hasFamilyRadios = entries.some(
+    (entry) => entry.kind === "radio" && !entry.disabled && /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])
+      .some((family) => matchesModelFamilyLabel(entry.label, family)),
   );
-  const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === "Close" && !entry.disabled);
-  const hasEffortCombobox = entries.some(
-    (entry) => entry.kind === "combobox" && ["Light", "Standard", "Extended", "Heavy"].includes(entry.value || "") && !entry.disabled,
+  const hasEffortCombobox = entries.some((entry) => {
+    if (entry.kind !== "combobox" || entry.disabled) return false;
+    const label = normalizeText(entry.label).toLowerCase();
+    const value = normalizeText(entry.value).toLowerCase();
+    const looksLikeEffortValue = ["light", "standard", "extended", "heavy"].includes(value);
+    if (!looksLikeEffortValue) return false;
+    return label === THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase()
+      || label === PRO_THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase()
+      || !label;
+  });
+  const hasAutoSwitchControl = entries.some((entry) => {
+    if (entry.disabled || entry.kind !== "switch") return false;
+    const controlText = normalizeText([entry.label, entry.value, entry.line].filter(Boolean).join(" "));
+    return controlText.toLowerCase().includes(AUTO_SWITCH_LABEL.toLowerCase());
+  });
+  const hasIntelligenceHeading = entries.some(
+    (entry) => entry.kind === "heading" && normalizeText(entry.label).toLowerCase() === "intelligence",
   );
-  return visibleFamilies.size >= 2 || hasCloseButton || hasEffortCombobox;
+  const hasDialogCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === "Close" && !entry.disabled);
+  return hasFamilyRadios || hasEffortCombobox || hasAutoSwitchControl || (hasDialogCloseButton && hasIntelligenceHeading);
 }
 
 /**
@@ -284,7 +308,7 @@ export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
   if (!selectedModelFamily || selectedModelFamily !== selection.modelFamily) return false;
 
   if (selection.modelFamily === "thinking" || selection.modelFamily === "pro") {
-    return effortSelectionVisible(snapshot, requestedEffortLabel(selection));
+    return effortSelectionVisible(snapshot, requestedEffortLabel(selection), selection.modelFamily);
   }
 
   if (selection.modelFamily === "instant") {

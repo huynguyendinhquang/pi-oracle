@@ -12,7 +12,7 @@ export declare const CHATGPT_CANONICAL_APP_ORIGINS: readonly string[];
 export declare function buildAllowedChatGptOrigins(chatUrl: string, authUrl?: string): string[];
 export declare function matchesModelFamilyLabel(label: string | undefined, family: OracleUiModelFamily): boolean;
 export declare function requestedEffortLabel(selection: OracleUiSelection): string | undefined;
-export declare function effortSelectionVisible(snapshot: string, effortLabel: string | undefined): boolean;
+export declare function effortSelectionVisible(snapshot: string, effortLabel: string | undefined, family?: OracleUiModelFamily): boolean;
 export declare function thinkingChipVisible(snapshot: string): boolean;
 export declare function snapshotHasModelConfigurationUi(snapshot: string): boolean;
 export declare function autoSwitchToThinkingSelectionVisible(snapshot: string): boolean | undefined;

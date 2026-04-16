@@ -802,7 +802,7 @@ async function openModelConfigurationViaDom(job) {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const readText = (element) => (element?.innerText || element?.getAttribute("aria-label") || element?.textContent || "").replace(/\s+/g, " ").trim();
     const hasConfigurationUi = () => Boolean(
-      document.querySelector('[role="dialog"] [role="radio"], [role="dialog"] [role="switch"], [role="menuitemradio"]')
+      document.querySelector('[role="dialog"] [role="radio"], [role="dialog"] [role="switch"], [role="dialog"] [role="combobox"]')
     );
     if (hasConfigurationUi()) return { opened: true, step: "already-open" };
     const selector = Array.from(document.querySelectorAll('button,[role="button"]')).find((element) =>
@@ -1145,6 +1145,12 @@ async function openModelConfiguration(job) {
   throw new Error("Could not open model configuration UI");
 }
 
+async function reopenModelConfigurationIfClosed(job, snapshot, reason) {
+  if (snapshotHasModelConfigurationUi(snapshot)) return snapshot;
+  await log(`Model configuration UI closed during ${reason}; reopening`);
+  return openModelConfiguration(job);
+}
+
 async function waitForModelConfigurationToSettle(job, options = {}) {
   const deadline = Date.now() + MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS;
   let lastCloseAttemptAt = 0;
@@ -1213,6 +1219,7 @@ async function configureModel(job) {
     if (!clickedViaDom) throw new Error(`Could not find model family control for ${job.selection.modelFamily}`);
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
+    familySnapshot = await reopenModelConfigurationIfClosed(job, familySnapshot, `DOM family selection for ${job.selection.modelFamily}`);
     verificationSnapshot = familySnapshot;
     familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
   }
@@ -1221,16 +1228,20 @@ async function configureModel(job) {
     await clickRef(job, familyEntry.ref);
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
+    familySnapshot = await reopenModelConfigurationIfClosed(job, familySnapshot, `family selection for ${job.selection.modelFamily}`);
     verificationSnapshot = familySnapshot;
     familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
-    if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection)) {
-      throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
-    }
+  }
+
+  if (!alreadyConfiguredInUi && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection) && !snapshotWeaklyMatchesRequestedModel(familySnapshot, job.selection)) {
+    throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
   }
 
   if (job.selection.modelFamily === "thinking" || job.selection.modelFamily === "pro") {
     const effortLabel = requestedEffortLabel(job.selection);
-    if (effortLabel && !effortSelectionVisible(familySnapshot, effortLabel)) {
+    if (effortLabel && !effortSelectionVisible(familySnapshot, effortLabel, job.selection.modelFamily)) {
+      familySnapshot = await reopenModelConfigurationIfClosed(job, familySnapshot, `effort selection for ${job.selection.modelFamily}`);
+      verificationSnapshot = familySnapshot;
       const opened = await openEffortDropdown(job);
       if (!opened) {
         throw new Error(`Could not open effort dropdown for requested effort: ${effortLabel}`);
@@ -1244,7 +1255,7 @@ async function configureModel(job) {
         effortSnapshot,
         (candidate) => candidate.kind === "combobox" && candidate.value === effortLabel && !candidate.disabled,
       );
-      if (!selectedEffort && !effortSelectionVisible(effortSnapshot, effortLabel)) {
+      if (!selectedEffort && !effortSelectionVisible(effortSnapshot, effortLabel, job.selection.modelFamily)) {
         throw new Error(`Requested effort did not remain selected: ${effortLabel}`);
       }
       familySnapshot = effortSnapshot;
@@ -1252,6 +1263,8 @@ async function configureModel(job) {
   }
 
   if (job.selection.modelFamily === "instant") {
+    familySnapshot = await reopenModelConfigurationIfClosed(job, familySnapshot, `instant configuration for ${job.selection.modelFamily}`);
+    verificationSnapshot = familySnapshot;
     const desiredAutoSwitchState = job.selection.autoSwitchToThinking === true;
     const currentAutoSwitchState = autoSwitchToThinkingSelectionVisible(familySnapshot);
     if (currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
@@ -1262,6 +1275,8 @@ async function configureModel(job) {
     }
   }
 
+  verificationSnapshot = await reopenModelConfigurationIfClosed(job, verificationSnapshot, `final verification for ${job.selection.modelFamily}`);
+  familySnapshot = verificationSnapshot;
   const stronglyVerified = snapshotStronglyMatchesRequestedModel(verificationSnapshot, job.selection);
   if (!stronglyVerified) {
     throw new Error(`Could not verify requested model settings in configuration UI for ${job.selection.modelFamily}`);
