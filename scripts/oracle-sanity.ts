@@ -3419,6 +3419,18 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes(structuredCodeTrimRegexEscaped), "worker structured extraction page-script should double-escape code-trim regex literals before eval serialization");
   assert(!workerSource.includes(structuredNormalizeRegexUnescaped), "worker structured extraction page-script should avoid unescaped normalize regex literals that break runtime eval parsing");
   assert(!workerSource.includes(structuredCodeTrimRegexUnescaped), "worker structured extraction page-script should avoid unescaped code-trim regex literals that break runtime eval parsing");
+  const structuredAnchorSplitEscaped = String.raw`split('\\n')`;
+  const structuredAnchorSplitUnescaped = String.raw`split('\n')`;
+  const structuredBadgeRegexEscaped = String.raw`/^\\+\\d+$/`;
+  const structuredBadgeRegexUnescaped = String.raw`/^\+\d+$/`;
+  const structuredCitationRegexEscaped = String.raw`/^\\[\\d+\\]$/`;
+  const structuredCitationRegexUnescaped = String.raw`/^\[\d+\]$/`;
+  assert(workerSource.includes(structuredAnchorSplitEscaped), "worker structured extraction page-script should double-escape newline splitting literals before eval serialization");
+  assert(workerSource.includes(structuredBadgeRegexEscaped), "worker structured extraction page-script should double-escape source-chip regex literals before eval serialization");
+  assert(workerSource.includes(structuredCitationRegexEscaped), "worker structured extraction page-script should double-escape citation regex literals before eval serialization");
+  assert(!workerSource.includes(structuredAnchorSplitUnescaped), "worker structured extraction page-script should avoid unescaped newline splitting literals that break runtime eval parsing");
+  assert(!workerSource.includes(structuredBadgeRegexUnescaped), "worker structured extraction page-script should avoid unescaped source-chip regex literals that break runtime eval parsing");
+  assert(!workerSource.includes(structuredCitationRegexUnescaped), "worker structured extraction page-script should avoid unescaped citation regex literals that break runtime eval parsing");
   assert(workerSource.includes("const fallbackMessages = await assistantMessages(job);"), "worker completion polling should retain assistantMessages plain-text fallback path");
   assert(workerSource.includes("const fallbackMessage = fallbackMessages[baselineAssistantCount];") && workerSource.includes("if (fallbackMessage?.text) {"), "worker completion polling should only switch to plain-text fallback when the fallback target message has usable text");
   assert(workerSource.includes("const targetText = targetMessage?.text || \"\";"), "worker completion detection should continue using plain text derived from the target response");

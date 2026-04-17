@@ -1638,19 +1638,19 @@ async function assistantMessagesStructured(job) {
           .trim();
         return text;
       };
-      const splitAnchorLines = (value) => normalize(value).split('\n').map((line) => compact(line)).filter(Boolean);
-      const hasSourceChipMarker = (value) => splitAnchorLines(value).some((line) => /^\+\d+$/.test(line));
+      const splitAnchorLines = (value) => normalize(value).split('\\n').map((line) => compact(line)).filter(Boolean);
+      const hasSourceChipMarker = (value) => splitAnchorLines(value).some((line) => /^\\+\\d+$/.test(line));
       const sanitizeAnchorText = (value) => {
         const lines = splitAnchorLines(value);
         if (lines.length === 0) return '';
-        const nonBadgeLines = lines.filter((line) => !/^\+\d+$/.test(line));
+        const nonBadgeLines = lines.filter((line) => !/^\\+\\d+$/.test(line));
         if (hasSourceChipMarker(value) && nonBadgeLines.length > 0) return nonBadgeLines[0];
         const baseLines = nonBadgeLines.length > 0 ? nonBadgeLines : lines;
         const deduped = [];
         for (const line of baseLines) {
           if (!deduped.includes(line)) deduped.push(line);
         }
-        return deduped.join('\n');
+        return deduped.join('\\n');
       };
       const toAbsoluteHref = (href) => {
         if (!href) return undefined;
@@ -1667,7 +1667,7 @@ async function assistantMessagesStructured(job) {
       const classifyAnchorKind = (anchor, rawText, text) => {
         const label = compact(anchor?.getAttribute('aria-label') || text || rawText || anchor?.textContent || '');
         if (hasSourceChipMarker(rawText)) return 'source';
-        if (anchor?.closest('sup') || /^\[\d+\]$/.test(label)) return 'citation';
+        if (anchor?.closest('sup') || /^\\[\\d+\\]$/.test(label)) return 'citation';
         if (/(?:citation|source)/i.test(label)) return 'source';
         return 'link';
       };
