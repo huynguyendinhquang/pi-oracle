@@ -1638,17 +1638,36 @@ async function assistantMessagesStructured(job) {
           .trim();
         return text;
       };
+      const splitAnchorLines = (value) => normalize(value).split('\n').map((line) => compact(line)).filter(Boolean);
+      const hasSourceChipMarker = (value) => splitAnchorLines(value).some((line) => /^\+\d+$/.test(line));
+      const sanitizeAnchorText = (value) => {
+        const lines = splitAnchorLines(value);
+        if (lines.length === 0) return '';
+        const nonBadgeLines = lines.filter((line) => !/^\+\d+$/.test(line));
+        if (hasSourceChipMarker(value) && nonBadgeLines.length > 0) return nonBadgeLines[0];
+        const baseLines = nonBadgeLines.length > 0 ? nonBadgeLines : lines;
+        const deduped = [];
+        for (const line of baseLines) {
+          if (!deduped.includes(line)) deduped.push(line);
+        }
+        return deduped.join('\n');
+      };
       const toAbsoluteHref = (href) => {
         if (!href) return undefined;
         try {
-          return new URL(href, document.baseURI).href;
+          const normalizedUrl = new URL(href, document.baseURI);
+          for (const key of Array.from(normalizedUrl.searchParams.keys())) {
+            if (/^utm_/i.test(key)) normalizedUrl.searchParams.delete(key);
+          }
+          return normalizedUrl.href;
         } catch {
           return undefined;
         }
       };
-      const classifyAnchorKind = (anchor, text) => {
-        const label = compact(anchor?.getAttribute('aria-label') || text || anchor?.textContent || '');
-        if (anchor?.closest('sup') || /^\\[\\d+\\]$/.test(label)) return 'citation';
+      const classifyAnchorKind = (anchor, rawText, text) => {
+        const label = compact(anchor?.getAttribute('aria-label') || text || rawText || anchor?.textContent || '');
+        if (hasSourceChipMarker(rawText)) return 'source';
+        if (anchor?.closest('sup') || /^\[\d+\]$/.test(label)) return 'citation';
         if (/(?:citation|source)/i.test(label)) return 'source';
         return 'link';
       };
@@ -1682,12 +1701,13 @@ async function assistantMessagesStructured(job) {
             continue;
           }
           if (child.tagName === 'A' && child.getAttribute('href')) {
+            const rawText = normalize(child.innerText || child.textContent || '');
+            const text = sanitizeAnchorText(rawText) || rawText;
             const href = toAbsoluteHref(child.getAttribute('href'));
-            const text = normalize(child.innerText || child.textContent || '');
             if (href) {
               inlines.push({
                 type: 'link',
-                kind: classifyAnchorKind(child, text),
+                kind: classifyAnchorKind(child, rawText, text),
                 text,
                 href,
               });
@@ -1797,12 +1817,15 @@ async function assistantMessagesStructured(job) {
         const links = [];
         const references = [];
         for (const anchor of Array.from(host.querySelectorAll('a[href]'))) {
+          const rawText = normalize(anchor.innerText || anchor.textContent || anchor.getAttribute('aria-label') || '');
+          const text = sanitizeAnchorText(rawText) || compact(rawText);
           const href = toAbsoluteHref(anchor.getAttribute('href'));
           if (!href) continue;
-          const text = compact(anchor.innerText || anchor.textContent || anchor.getAttribute('aria-label') || '');
-          const kind = classifyAnchorKind(anchor, text);
+          const kind = classifyAnchorKind(anchor, rawText, text);
           const entry = { kind, label: text || undefined, text: text || undefined, href };
           if (kind === 'citation' || kind === 'source') references.push(entry);
+          else links.push(entry);
+        }
           else links.push(entry);
         }
         return {

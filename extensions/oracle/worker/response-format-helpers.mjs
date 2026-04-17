@@ -35,15 +35,102 @@ function asArray(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function splitCleanLines(value) {
+  return normalizeString(value)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * @param {string[]} lines
+ * @returns {boolean}
+ */
+function hasSourceChipMarker(lines) {
+  return lines.some((line) => /^\+\d+$/.test(line));
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | undefined}
+ */
+function sanitizeDisplayText(value) {
+  const lines = splitCleanLines(value);
+  if (lines.length === 0) return undefined;
+  const nonBadgeLines = lines.filter((line) => !/^\+\d+$/.test(line));
+  if (hasSourceChipMarker(lines) && nonBadgeLines.length > 0) {
+    return nonBadgeLines[0];
+  }
+  const baseLines = nonBadgeLines.length > 0 ? nonBadgeLines : lines;
+  const deduped = [];
+  for (const line of baseLines) {
+    if (!deduped.includes(line)) deduped.push(line);
+  }
+  const text = deduped.join("\n").trim();
+  return text ? text : undefined;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | undefined}
+ */
+function canonicalizeHref(value) {
+  const href = optionalString(value);
+  if (!href) return undefined;
+  try {
+    const normalizedUrl = new URL(href);
+    for (const key of Array.from(normalizedUrl.searchParams.keys())) {
+      if (/^utm_/i.test(key)) normalizedUrl.searchParams.delete(key);
+    }
+    return normalizedUrl.href;
+  } catch {
+    return href;
+  }
+}
+
+/**
+ * @param {OracleStructuredResponseInline | unknown} inline
+ * @returns {boolean}
+ */
+function isReferenceLikeInline(inline) {
+  if (!inline || typeof inline !== "object") return false;
+  const kind = optionalString(inline.kind) || optionalString(inline.type) || "";
+  return kind === "source" || kind === "citation";
+}
+
+/**
+ * @param {OracleStructuredResponseInline[] | undefined} inlines
+ * @returns {boolean}
+ */
+function hasInlineBodyContext(inlines) {
+  return asArray(inlines).some((inline) => {
+    if (typeof inline === "string") return Boolean(optionalString(inline));
+    if (!inline || typeof inline !== "object") return false;
+    const href = canonicalizeHref(inline.href);
+    const text = sanitizeDisplayText(inline.text) || optionalString(inline.text) || "";
+    if (!href) return Boolean(text);
+    return !isReferenceLikeInline(inline) && Boolean(text || href);
+  });
+}
+
+/**
  * @param {OracleStructuredResponseInline[] | undefined} inlines
  * @returns {string}
  */
 function renderInlineText(inlines) {
+  const suppressReferenceChips = hasInlineBodyContext(inlines);
   return asArray(inlines)
     .map((inline) => {
       if (typeof inline === "string") return normalizeString(inline);
       if (!inline || typeof inline !== "object") return "";
-      return normalizeString(inline.text);
+      const href = canonicalizeHref(inline.href);
+      const text = sanitizeDisplayText(inline.text) || normalizeString(inline.text);
+      if (!href) return normalizeString(inline.text);
+      if (suppressReferenceChips && isReferenceLikeInline(inline)) return "";
+      return text || href;
     })
     .join("");
 }
@@ -53,13 +140,15 @@ function renderInlineText(inlines) {
  * @returns {string}
  */
 function renderInlineMarkdown(inlines) {
+  const suppressReferenceChips = hasInlineBodyContext(inlines);
   return asArray(inlines)
     .map((inline) => {
       if (typeof inline === "string") return normalizeString(inline);
       if (!inline || typeof inline !== "object") return "";
-      const text = normalizeString(inline.text);
-      const href = optionalString(inline.href);
-      if (!href) return text;
+      const href = canonicalizeHref(inline.href);
+      const text = sanitizeDisplayText(inline.text) || normalizeString(inline.text);
+      if (!href) return normalizeString(inline.text);
+      if (suppressReferenceChips && isReferenceLikeInline(inline)) return "";
       const label = text || href;
       return `[${label}](${href})`;
     })
@@ -188,12 +277,13 @@ function referencesFromInlines(inlines) {
   return asArray(inlines)
     .map((inline) => {
       if (!inline || typeof inline !== "object") return undefined;
-      const href = optionalString(inline.href);
+      const href = canonicalizeHref(inline.href);
       if (!href) return undefined;
+      const label = sanitizeDisplayText(inline.text);
       return {
         kind: optionalString(inline.kind) || "inline",
-        label: optionalString(inline.text),
-        text: optionalString(inline.text),
+        label,
+        text: label,
         href,
       };
     })
@@ -206,14 +296,27 @@ function referencesFromInlines(inlines) {
  */
 function normalizeReference(value) {
   if (!value || typeof value !== "object") return undefined;
-  const href = optionalString(value.href);
+  const href = canonicalizeHref(value.href);
   if (!href) return undefined;
+  const label = sanitizeDisplayText(value.label) || sanitizeDisplayText(value.text);
   return {
     kind: optionalString(value.kind) || "reference",
-    label: optionalString(value.label),
-    text: optionalString(value.text),
+    label,
+    text: label,
     href,
   };
+}
+
+/**
+ * @param {OracleStructuredResponseReference} reference
+ * @returns {number}
+ */
+function referenceQuality(reference) {
+  const label = optionalString(reference.label) || optionalString(reference.text) || "";
+  let score = label.length;
+  if (/\bofficial\b/i.test(label)) score += 20;
+  if (reference.kind === "source") score += 5;
+  return score;
 }
 
 /**
@@ -236,11 +339,14 @@ export function buildResponseReferences(response) {
     .map((reference) => normalizeReference(reference))
     .filter((reference) => Boolean(reference));
 
-  const deduped = new Map();
+  const dedupedByHref = new Map();
   for (const reference of [...fromTopLevel, ...fromBlocks]) {
-    const key = [reference.kind || "", reference.label || "", reference.text || "", reference.href || ""].join("|");
-    if (!deduped.has(key)) deduped.set(key, reference);
+    const key = reference.href || "";
+    const previous = dedupedByHref.get(key);
+    if (!previous || referenceQuality(reference) > referenceQuality(previous)) {
+      dedupedByHref.set(key, reference);
+    }
   }
 
-  return [...deduped.values()];
+  return [...dedupedByHref.values()];
 }

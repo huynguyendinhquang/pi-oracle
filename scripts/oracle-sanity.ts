@@ -3402,12 +3402,15 @@ async function testResponseTimeoutGuard(): Promise<void> {
   );
   assert(workerSource.includes("assistantMessagesStructured(job)"), "worker should extract structured assistant responses alongside the plain-text helper");
   assert(workerSource.includes("querySelectorAll('a[href]')"), "worker structured extraction should capture anchor href metadata from assistant responses");
-  assert(workerSource.includes("new URL(href, document.baseURI).href"), "worker structured extraction should absolutize relative href values against document.baseURI");
+  assert(workerSource.includes("const normalizedUrl = new URL(href, document.baseURI);") && workerSource.includes("return normalizedUrl.href;"), "worker structured extraction should absolutize relative href values against document.baseURI");
   assert(workerSource.includes("child.matches('ul,ol')"), "worker structured extraction should preserve ordered and unordered lists");
   assert(workerSource.includes("child.matches('pre')") && workerSource.includes("child.matches('code')"), "worker structured extraction should preserve pre/code blocks");
   assert(workerSource.includes("child.matches('blockquote')"), "worker structured extraction should preserve blockquotes");
   assert(workerSource.includes("child.matches('table')"), "worker structured extraction should preserve simple tables");
   assert(workerSource.includes("kind === 'citation' || kind === 'source'"), "worker structured extraction should preserve citation/source anchors as references");
+  assert(workerSource.includes("if (/^utm_/i.test(key)) normalizedUrl.searchParams.delete(key);"), "worker structured extraction should strip utm_* tracking params from preserved hrefs");
+  assert(workerSource.includes("if (hasSourceChipMarker(rawText)) return 'source';"), "worker structured extraction should classify +N source chips as source-style links");
+  assert(workerSource.includes("const text = sanitizeAnchorText(rawText) || rawText;"), "worker structured extraction should sanitize noisy anchor labels before persisting structured link metadata");
   const structuredNormalizeRegexEscaped = String.raw`replace(/\\r\\n?/g, '\\n')`;
   const structuredNormalizeRegexUnescaped = String.raw`replace(/\r\n?/g, '\n')`;
   const structuredCodeTrimRegexEscaped = String.raw`replace(/\\n+$/g, '')`;
@@ -4715,6 +4718,40 @@ function testResponseFormatHelpers(): void {
   const dedupedReferences = buildResponseReferences(duplicateReferenceFixture);
   assert(dedupedReferences.length === 1, "response format helpers should dedupe top-level and inline copies of the same href metadata");
   assert(dedupedReferences[0]?.href === "https://openai.com/docs", "response format helpers should keep deduped href metadata intact");
+  const sourceChipFixture = {
+    blocks: [
+      {
+        type: "list",
+        ordered: false,
+        items: [
+          {
+            text: "TypeScript stable line hiện tại là 6.0. TypeScript +1",
+            inlines: [
+              { type: "text", text: "TypeScript stable line hiện tại là 6.0. " },
+              { type: "link", kind: "source", text: "TypeScript\n+1", href: "https://www.typescriptlang.org/download/?utm_source=chatgpt.com" },
+            ],
+          },
+          {
+            text: "TypeScript Download (official)",
+            inlines: [
+              { type: "link", kind: "link", text: "TypeScript Download (official)", href: "https://www.typescriptlang.org/download/" },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  assert(
+    renderStructuredResponsePlainText(sourceChipFixture) === "TypeScript stable line hiện tại là 6.0.\nTypeScript Download (official)",
+    "response format helpers should omit noisy source-chip labels from primary plain-text reading when narrative text already exists",
+  );
+  assert(
+    renderStructuredResponseMarkdown(sourceChipFixture) === "- TypeScript stable line hiện tại là 6.0.\n- [TypeScript Download (official)](https://www.typescriptlang.org/download/)",
+    "response format helpers should keep clean source links in markdown while omitting noisy inline source chips from narrative bullets",
+  );
+  const sourceChipReferences = buildResponseReferences(sourceChipFixture);
+  assert(sourceChipReferences.length === 1, "response format helpers should collapse noisy chip links and clean source links for the same href into one reference entry");
+  assert(sourceChipReferences[0]?.label === "TypeScript Download (official)", "response format helpers should prefer the cleaner label when multiple references share the same href");
 }
 
 
