@@ -1826,8 +1826,6 @@ async function assistantMessagesStructured(job) {
           if (kind === 'citation' || kind === 'source') references.push(entry);
           else links.push(entry);
         }
-          else links.push(entry);
-        }
         return {
           plainText: renderText(host),
           blocks: extractBlocks(host),
