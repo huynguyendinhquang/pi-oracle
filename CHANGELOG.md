@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.8 - 2026-04-21
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-ai` / `@mariozechner/pi-coding-agent` `0.68.0`
+- regenerated the npm lockfile against the current stable dependency graph
+
+### Compatibility
+- reviewed the pi `0.68.0` changelog and confirmed the extension already uses explicit session cwd values instead of relying on removed ambient cwd fallbacks in public helpers
+
 ## 0.6.7 - 2026-04-18
 
 ### Changed
