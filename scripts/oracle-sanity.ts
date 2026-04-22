@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { Check } from "@sinclair/typebox/value";
+import { Check } from "typebox/value";
 import {
   coerceOracleSubmitPresetId,
   DEFAULT_CONFIG,
@@ -3161,9 +3161,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
     assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
   }
-  const preflightSchema = preflightTool.parameters as import("@sinclair/typebox").TSchema;
-  const authSchema = authTool.parameters as import("@sinclair/typebox").TSchema;
-  const submitSchema = submitTool.parameters as import("@sinclair/typebox").TSchema;
+  const preflightSchema = preflightTool.parameters as import("typebox").TSchema;
+  const authSchema = authTool.parameters as import("typebox").TSchema;
+  const submitSchema = submitTool.parameters as import("typebox").TSchema;
   assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
   assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
   assert(Object.keys(preflightProperties ?? {}).length === 0, "oracle_preflight should not require caller arguments");
