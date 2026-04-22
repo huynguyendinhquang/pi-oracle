@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.9 - 2026-04-22
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-ai` / `@mariozechner/pi-coding-agent` `0.69.0`
+- migrated published TypeBox integration metadata and source imports from `@sinclair/typebox` to `typebox` for pi `0.69.0` compatibility
+- updated the local oracle verification flow to externalize `typebox` in the extension bundle check and regenerated the npm lockfile against the current stable dependency graph
+
+### Compatibility
+- reviewed the pi `0.69.0` changelog and confirmed the extension already uses explicit session-scoped objects in the relevant flows while now matching the required TypeBox 1.x package name
+
+
 ## 0.6.8 - 2026-04-21
 
 ### Changed
