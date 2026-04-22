@@ -239,6 +239,9 @@ Browser/auth settings are global-only because they control local privileged brow
   "defaults": {
     "preset": "<preset id from ORACLE_SUBMIT_PRESETS>"
   },
+  "response": {
+    "defaultFormat": "markdown"
+  },
   "browser": {
     "sessionPrefix": "oracle",
     "authSeedProfileDir": "<absolute path to oracle auth seed profile>",
@@ -389,7 +392,7 @@ Phase 1 compatibility contract remains:
 
 - `responsePath` points to `response.md`
 - `responseFormat` remains `text/plain`
-- plain-text response is the required primary reader contract for compatibility
+- `response.md` remains the compatibility artifact for older readers and automation
 
 Additive rich sidecars are optional, best-effort outputs:
 
@@ -397,11 +400,21 @@ Additive rich sidecars are optional, best-effort outputs:
 - `response.rich.md` — markdown rendering derived from that structured payload
 - `response.references.json` — flattened link/reference metadata (absolute `href`s) derived from that same subtree
 
+Phase D response-format preference on this worktree branch adds:
+
+- `response.defaultFormat` in config with allowed values `markdown | plain`
+- packaged worktree default: `response.defaultFormat = markdown`
+- additive job metadata: `preferredResponseFormat` and `preferredResponsePath`
+- `/oracle-read` and `oracle_read` preview the resolved preferred artifact when it exists
+
 Fallback semantics:
 
 - worker attempts structured DOM extraction first
 - if structured extraction fails or does not yield target text, worker falls back to legacy plain-text extraction and records `responseExtractionMode: plain-text-fallback`
+- if `response.defaultFormat = markdown` and `response.rich.md` exists, readers prefer `response.rich.md`
+- otherwise readers fall back to `response.md`
 - sidecar rendering/writes are non-fatal; job still completes when `response.md` plain text is available
+- Phase D first pass does not change wake-up transport or wake-up content; wake-up still points callers at `/oracle-read` plus the legacy `response.md` path
 
 ## ChatGPT page-state classifier
 

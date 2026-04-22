@@ -146,6 +146,7 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   assert(notificationText.includes(`oracle_read({ jobId: \"${jobId}\" })`), "poller wake-up content should still mention oracle_read for agent callers who need tool output in-turn");
   assert(notificationText.includes(`Response file: ${deliveredJob.responsePath}`), "poller wake-up content should still include the persisted response path as secondary context");
   assert(notificationText.includes(`Artifacts: ${getJobDir(jobId)}/artifacts`), "poller wake-up content should still include the persisted artifacts directory");
+  assert(!notificationText.includes("preferred-response:"), "poller wake-up content should remain unchanged in Phase D first pass and must not expose preferred-response metadata");
   assert(!notificationText.includes("Read response:"), "poller wake-up content should not steer the receiver toward a raw response-file read as the primary action");
   assert(!readJob(jobId)?.notifiedAt, "same-session live pollers should leave jobs unnotified while completion delivery remains best-effort only");
   await cleanupJob(jobId);
@@ -205,6 +206,8 @@ async function testOracleReadUsesConfiguredJobsDir(config: OracleConfig): Promis
     markdownResponsePath,
     structuredResponsePath,
     referencesPath,
+    preferredResponseFormat: "markdown",
+    preferredResponsePath: markdownResponsePath,
   }));
   const persisted = readJob(jobId);
   assert(persisted?.responsePath, "oracle read rich-path coverage should retain response path for plain-text preview");
@@ -219,8 +222,11 @@ async function testOracleReadUsesConfiguredJobsDir(config: OracleConfig): Promis
     assert(text.includes(`markdown-response: ${markdownResponsePath}`), "oracle read should surface additive markdown sidecar paths");
     assert(text.includes(`structured-response: ${structuredResponsePath}`), "oracle read should surface additive structured sidecar paths");
     assert(text.includes(`references: ${referencesPath}`), "oracle read should surface additive references sidecar paths");
-    assert(text.includes("fixture oracle response"), "oracle read should keep plain-text response preview behavior unchanged");
-    assert(!text.includes("structured-sidecar"), "oracle read plain-text preview should still read from response.md, not structured sidecar payloads");
+    assert(text.includes(`preferred-response-format: markdown`), "oracle read should surface the resolved preferred response format");
+    assert(text.includes(`preferred-response: ${markdownResponsePath}`), "oracle read should surface the resolved preferred response path");
+    assert(text.includes("# rich markdown sidecar"), "oracle read should preview the preferred markdown artifact when available");
+    assert(!text.includes("fixture oracle response"), "oracle read should not fall back to response.md when a preferred markdown artifact is available");
+    assert(!text.includes("structured-sidecar"), "oracle read preview should not read from structured JSON sidecar payloads");
   } finally {
     await rm(fakeWorkerPath, { force: true });
     await cleanupJob(jobId);
@@ -254,6 +260,8 @@ async function testOracleStatusSurfacesRichAssetPaths(config: OracleConfig): Pro
     markdownResponsePath,
     structuredResponsePath,
     referencesPath,
+    preferredResponseFormat: "markdown",
+    preferredResponsePath: markdownResponsePath,
   }));
   const persisted = readJob(jobId);
   assert(persisted?.responsePath, "oracle status rich-path coverage should retain response path");
@@ -270,6 +278,9 @@ async function testOracleStatusSurfacesRichAssetPaths(config: OracleConfig): Pro
     assert(statusNotification.includes(`markdown-response: ${markdownResponsePath}`), "oracle status should surface additive markdown sidecar paths");
     assert(statusNotification.includes(`structured-response: ${structuredResponsePath}`), "oracle status should surface additive structured sidecar paths");
     assert(statusNotification.includes(`references: ${referencesPath}`), "oracle status should surface additive references sidecar paths");
+    assert(statusNotification.includes("preferred-response-format: markdown"), "oracle status should surface preferred response format metadata");
+    assert(statusNotification.includes(`preferred-response: ${markdownResponsePath}`), "oracle status should surface preferred response path metadata");
+    assert(!statusNotification.includes("# status rich markdown"), "oracle status should remain metadata-only and not include preferred markdown preview bodies");
     assert(!statusNotification.includes("fixture oracle response"), "oracle status should remain metadata-only and not include plain-text response preview");
   } finally {
     await rm(fakeWorkerPath, { force: true });

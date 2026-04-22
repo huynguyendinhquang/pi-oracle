@@ -8,6 +8,7 @@ Add a configurable response-format mode on the `feat/oracle-structured-response-
 
 - This design targets the `feat/oracle-structured-response-formats` worktree/branch only, not `main`.
 - Phase A/B stabilization happens first: completion detection should move back to plain-text-first before Phase D changes response selection behavior.
+- Phase D first pass is presentation-only: it must not change completion detection, response-persistence ordering before terminal completion, wake-up eligibility, or wake-up transport behavior.
 - `response.md` plus `job.responseFormat: "text/plain"` remain the compatibility anchor until a later explicit contract change.
 - `response.rich.md` is already the intended primary human/AI-readable artifact when structured extraction succeeds.
 - Existing users and tooling must still be able to read plain text without configuration changes.
@@ -17,14 +18,16 @@ Add a configurable response-format mode on the `feat/oracle-structured-response-
 This phase covers response-format preference and reader/output selection only:
 - add config for preferred response format
 - resolve preferred response asset per job
-- surface preferred artifact in `/oracle-read`, wake-up guidance, and related observability
+- surface the preferred artifact in `/oracle-read` and related observability
 - preserve best-effort fallback to plain text
 
 Non-goals for this phase:
 - changing the `oracle_submit` tool signature
 - replacing `response.md` as the required compatibility artifact
 - removing structured sidecars
-- changing wake-up transport mechanics
+- changing completion detection semantics
+- changing response-persistence ordering before terminal completion
+- changing wake-up transport or wake-up content in the first pass
 - changing artifact download behavior
 - redesigning the job schema beyond additive preference metadata
 
@@ -68,13 +71,14 @@ response: {
 ### 2. Default behavior
 
 Recommended Phase D default:
-- packaged default: `response.defaultFormat = "markdown"`
+- packaged default on this worktree branch: `response.defaultFormat = "markdown"`
 - runtime fallback: if markdown asset is unavailable for a job, automatically use plain text
 
-Why this default:
+Why this default on the branch:
 - matches the branch goal that `response.rich.md` is the primary human/AI-readable artifact
 - keeps plain text as compatibility fallback rather than the preferred default
 - avoids forcing users to opt in on every machine when the branch already captures markdown successfully
+- still leaves room to re-evaluate the packaged default separately if this behavior is later proposed for `main`
 
 Fallback rule:
 
@@ -144,15 +148,16 @@ The job summary should still include all additive paths when present:
 - preferred response path
 - all additive rich sidecar paths when present
 
-#### Wake-up content
+#### Wake-up content (deferred from the first pass)
 
-Wake-up guidance should become format-aware without changing transport:
+Phase D first pass should leave wake-up content unchanged.
+
+Rules:
 - keep `Use /oracle-read <jobId>` as the primary instruction
-- change the secondary response-file line to point at the resolved preferred path when present
-- if markdown is preferred and available, reference `response.rich.md`
-- otherwise keep referencing `response.md`
+- keep the secondary response-file line unchanged in the first pass
+- do not make wake-up delivery or wake-up messaging format-aware yet
 
-This keeps wake-up UX aligned with the configured default mode.
+Reason: wake-up behavior is currently under separate stabilization/debugging work, so Phase D should stay presentation-only and avoid adding another variable to that path.
 
 ### 6. Config override rules
 
@@ -200,14 +205,12 @@ Keep changes focused:
   - surface preferred response metadata
 - `extensions/oracle/lib/commands.ts`
   - make `/oracle-read` preview the preferred artifact
-- `extensions/oracle/lib/poller.ts`
-  - keep transport unchanged; only pass the preferred path into wake-up content if needed
 - `extensions/oracle/shared/job-observability-helpers.d.mts`
   - update shared summary typing
 - `scripts/oracle-sanity.ts`
   - config validation and preferred-path invariants
 - `scripts/oracle-sanity-poller-suite.ts`
-  - wake-up content uses preferred response path when available
+  - confirm wake-up semantics remain unchanged by response-format preference
 
 ## Testing Strategy
 
@@ -233,12 +236,13 @@ Add tests for:
 - `/oracle-read` previews plain text when markdown unavailable
 - `/oracle-status` surfaces preferred response fields without switching to body preview mode
 
-### Wake-up coverage
+### No-regression coverage
 
 Add tests for:
-- wake-up content still says `Use /oracle-read <jobId>`
-- response-file line references `preferredResponsePath` when available
-- fallback to `response.md` when markdown is missing
+- `response.defaultFormat` does not change terminal phase progression
+- `response.defaultFormat` does not change wake-up attempt/settlement behavior
+- `response.defaultFormat` does not change the requirement that `response.md` is always persisted
+- preferred-path selection changes reader behavior only, not completion/wake-up mechanics
 
 ### Verification
 
@@ -259,10 +263,11 @@ Live verification after implementation:
 ## Acceptance Criteria
 
 - The worktree branch supports `response.defaultFormat: "markdown" | "plain"` in config.
-- Packaged default resolves to markdown preference.
+- Packaged default on the worktree branch resolves to markdown preference.
 - `response.md` remains required and `job.responseFormat` remains `"text/plain"` in this phase.
 - Jobs surface `preferredResponseFormat` and `preferredResponsePath` additively.
 - `/oracle-read` previews markdown by default when markdown exists.
 - `/oracle-read` falls back to plain text when markdown is unavailable.
-- Wake-up guidance points at the resolved preferred response path without changing wake-up transport.
+- Phase D first pass leaves wake-up transport and wake-up content unchanged.
 - Existing plain-text compatibility consumers keep working unchanged.
+- Response-format preference changes reader selection only; it does not change completion or wake-up semantics.

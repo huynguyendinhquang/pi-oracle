@@ -466,6 +466,7 @@ export async function completeJob(jobId: string, status: "complete" | "failed" |
     patch: {
       responsePath,
       responseFormat: "text/plain",
+      runtimeSessionName: "",
     },
   }));
   if (status === "complete") {

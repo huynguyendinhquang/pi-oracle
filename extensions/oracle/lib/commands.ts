@@ -26,18 +26,40 @@ import { refreshOracleStatus } from "./poller.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 import { getProjectId } from "./runtime.js";
 
+function getResponsePreviewPaths(preferredResponsePath: string | undefined, responsePath: string): string[] {
+  return [preferredResponsePath, responsePath].filter((path, index, paths): path is string => Boolean(path) && paths.indexOf(path) === index);
+}
+
+function findAvailableResponsePath(preferredResponsePath: string | undefined, responsePath: string): string | undefined {
+  return getResponsePreviewPaths(preferredResponsePath, responsePath).find((path) => existsSync(path));
+}
+
+async function loadResponsePreview(preferredResponsePath: string | undefined, responsePath: string): Promise<{
+  responseAvailable: boolean;
+  responsePreview?: string;
+}> {
+  for (const previewPath of getResponsePreviewPaths(preferredResponsePath, responsePath)) {
+    if (!existsSync(previewPath)) continue;
+    try {
+      return {
+        responseAvailable: true,
+        responsePreview: (await readFile(previewPath, "utf8")).slice(0, 4000),
+      };
+    } catch {
+      continue;
+    }
+  }
+  return { responseAvailable: false };
+}
+
 async function summarizeJob(jobId: string, options?: { responsePreview?: boolean }): Promise<string> {
   const job = readJob(jobId);
   if (!job) return `Oracle job ${jobId} not found.`;
 
-  const responseAvailable = Boolean(job.responsePath && existsSync(job.responsePath));
+  let responseAvailable = Boolean(findAvailableResponsePath(job.preferredResponsePath, job.responsePath));
   let responsePreview: string | undefined;
-  if (options?.responsePreview && responseAvailable && job.responsePath) {
-    try {
-      responsePreview = (await readFile(job.responsePath, "utf8")).slice(0, 4000);
-    } catch {
-      responsePreview = undefined;
-    }
+  if (options?.responsePreview) {
+    ({ responseAvailable, responsePreview } = await loadResponsePreview(job.preferredResponsePath, job.responsePath));
   }
 
   return formatOracleJobSummary(job, {

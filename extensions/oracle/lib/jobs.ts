@@ -147,6 +147,8 @@ export interface OracleJob {
   markdownResponsePath?: string;
   structuredResponsePath?: string;
   referencesPath?: string;
+  preferredResponseFormat?: "markdown" | "plain";
+  preferredResponsePath?: string;
   artifactPaths: string[];
   artifactsManifestPath?: string;
   archivePath: string;

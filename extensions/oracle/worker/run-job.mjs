@@ -260,6 +260,14 @@ async function persistResponseFiles(job, completion) {
   return sidecarPaths;
 }
 
+function resolvePreferredResponse(job, sidecarPaths) {
+  const preferred = job.config?.response?.defaultFormat === "plain" ? "plain" : "markdown";
+  if (preferred === "markdown" && sidecarPaths.markdownResponsePath) {
+    return { format: "markdown", path: sidecarPaths.markdownResponsePath };
+  }
+  return { format: "plain", path: job.responsePath };
+}
+
 
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -2468,6 +2476,7 @@ async function run() {
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     const sidecarPaths = await persistResponseFiles(currentJob, completion);
+    const preferredResponse = resolvePreferredResponse(currentJob, sidecarPaths);
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "downloading_artifacts", {
       at: new Date().toISOString(),
       source: "oracle:worker",
@@ -2490,6 +2499,8 @@ async function run() {
         markdownResponsePath: sidecarPaths.markdownResponsePath,
         structuredResponsePath: sidecarPaths.structuredResponsePath,
         referencesPath: sidecarPaths.referencesPath,
+        preferredResponseFormat: preferredResponse.format,
+        preferredResponsePath: preferredResponse.path,
         artifactFailureCount,
         responseExtractionMode: completion.responseExtractionMode,
         cleanupPending: true,

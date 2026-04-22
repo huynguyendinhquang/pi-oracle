@@ -20,6 +20,8 @@ export interface OracleJobSummaryLike {
   markdownResponsePath?: string;
   structuredResponsePath?: string;
   referencesPath?: string;
+  preferredResponseFormat?: "markdown" | "plain";
+  preferredResponsePath?: string;
   artifactFailureCount?: number;
   lastCleanupAt?: string;
   cleanupWarnings?: string[];

@@ -444,6 +444,7 @@ async function createTerminalJob(config: OracleConfig, cwd: string, sessionId: s
       completedAt,
       responsePath: join(getJobDir(job.id), "response.md"),
       responseFormat: "text/plain",
+      runtimeSessionName: "",
     }, completedAt),
   }));
   return jobId;
@@ -582,6 +583,7 @@ async function testCleanupPendingRecoveryUnblocksAdmission(config: OracleConfig)
     cleanupPending: true,
     cleanupWarnings: ["stale warning"],
     conversationId,
+    runtimeSessionName: "",
   }));
   const pendingJob = readJob(jobId);
   assert(pendingJob, "cleanup-pending recovery job should be readable");
@@ -1591,12 +1593,20 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
   const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
   const jobId = await createJobForTest(config, cwd, sessionFile);
   let commandReadJobId: string | undefined;
+  let plainPreferredJobId: string | undefined;
 
   try {
     commandReadJobId = await createTerminalJob(config, cwd, sessionFile, "command");
-    await writeFile(join(getJobDir(commandReadJobId), "response.md"), "Preview body from oracle-read command.\n", { encoding: "utf8", mode: 0o600 });
+    const commandResponsePath = join(getJobDir(commandReadJobId), "response.md");
+    const commandMarkdownPath = join(getJobDir(commandReadJobId), "response.rich.md");
+    await writeFile(commandResponsePath, "Plain preview from response.md.\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(commandMarkdownPath, "# Preferred markdown preview from oracle-read command.\n", { encoding: "utf8", mode: 0o600 });
     await updateJob(commandReadJobId, (job) => ({
       ...job,
+      responsePath: commandResponsePath,
+      markdownResponsePath: commandMarkdownPath,
+      preferredResponseFormat: "markdown",
+      preferredResponsePath: commandMarkdownPath,
       wakeupAttemptCount: 1,
       wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
       wakeupSettledAt: undefined,
@@ -1607,8 +1617,39 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
     }));
     await readCommand!.handler(commandReadJobId, readCommandCtx);
     const readCommandMessage = readCommandUi.notifications.at(-1)?.message;
-    assert(typeof readCommandMessage === "string" && readCommandMessage.includes("Preview body from oracle-read command."), "oracle-read should surface the saved response preview in the user-facing command output");
+    assert(typeof readCommandMessage === "string" && readCommandMessage.includes("# Preferred markdown preview from oracle-read command."), "oracle-read should preview the preferred response artifact in the user-facing command output");
+    assert(typeof readCommandMessage === "string" && !readCommandMessage.includes("Plain preview from response.md."), "oracle-read should not fall back to response.md when a preferred markdown preview is available");
     assert(readJob(commandReadJobId)?.wakeupSettledSource === "oracle_read_command", "oracle-read should settle further wake-up retries through its own command provenance");
+
+    await rm(commandMarkdownPath, { force: true });
+    await readCommand!.handler(commandReadJobId, readCommandCtx);
+    const fallbackReadCommandMessage = readCommandUi.notifications.at(-1)?.message;
+    assert(typeof fallbackReadCommandMessage === "string" && fallbackReadCommandMessage.includes("Plain preview from response.md."), "oracle-read should fall back to response.md when the preferred markdown artifact is missing");
+    assert(typeof fallbackReadCommandMessage === "string" && !fallbackReadCommandMessage.includes("# Preferred markdown preview from oracle-read command."), "oracle-read should stop previewing a missing preferred markdown artifact");
+
+    const fallbackReadResult = await readTool.execute!("oracle-read-terminal-summary-fallback-test", { jobId: commandReadJobId }, undefined, () => { }, readCtx) as { content?: Array<{ text?: string }>; details?: unknown };
+    const fallbackReadText = fallbackReadResult.content?.[0]?.text;
+    const fallbackReadJobDetails = asRecord(asRecord(fallbackReadResult.details)?.job);
+    assert(typeof fallbackReadText === "string" && fallbackReadText.includes("Plain preview from response.md."), "oracle_read tool should fall back to response.md when the preferred markdown artifact is missing");
+    assert(typeof fallbackReadText === "string" && !fallbackReadText.includes("# Preferred markdown preview from oracle-read command."), "oracle_read tool should not keep previewing a missing preferred markdown artifact");
+    assert(fallbackReadJobDetails?.responseAvailable === true, "oracle_read structured details should keep responseAvailable=true when response.md remains readable");
+
+    plainPreferredJobId = await createTerminalJob(config, cwd, sessionFile);
+    const plainPreferredResponsePath = join(getJobDir(plainPreferredJobId), "response.md");
+    const plainPreferredMarkdownPath = join(getJobDir(plainPreferredJobId), "response.rich.md");
+    await writeFile(plainPreferredResponsePath, "Plain preferred preview from response.md.\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(plainPreferredMarkdownPath, "# Ignored markdown preview.\n", { encoding: "utf8", mode: 0o600 });
+    await updateJob(plainPreferredJobId, (job) => ({
+      ...job,
+      responsePath: plainPreferredResponsePath,
+      markdownResponsePath: plainPreferredMarkdownPath,
+      preferredResponseFormat: "plain",
+      preferredResponsePath: plainPreferredResponsePath,
+    }));
+    const plainPreferredResult = await readTool.execute!("oracle-read-terminal-summary-plain-test", { jobId: plainPreferredJobId }, undefined, () => { }, readCtx) as { content?: Array<{ text?: string }> };
+    const plainPreferredText = plainPreferredResult.content?.[0]?.text;
+    assert(typeof plainPreferredText === "string" && plainPreferredText.includes("Plain preferred preview from response.md."), "oracle_read tool should preview response.md when plain is the preferred format");
+    assert(typeof plainPreferredText === "string" && !plainPreferredText.includes("# Ignored markdown preview."), "oracle_read tool should not prefer markdown sidecars when plain is requested");
 
     const failedAt = "2026-01-01T00:00:20.000Z";
     const wakeupRequestedAt = "2026-01-01T00:00:25.000Z";
@@ -1639,6 +1680,7 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
     assert(statusMessage.includes("wakeup-event:") && !statusMessage.includes(`response: ${String(readJob(jobId)?.responsePath)}`), "oracle status should separate wake-up bookkeeping and hide unavailable response paths from failed-job summaries");
   } finally {
     await rm(fakeWorkerPath, { force: true });
+    if (plainPreferredJobId) await cleanupJob(plainPreferredJobId);
     if (commandReadJobId) await cleanupJob(commandReadJobId);
     await cleanupJob(jobId);
   }
@@ -1806,6 +1848,7 @@ async function testCleanupPendingRecoveryTerminatesStaleLiveWorker(config: Oracl
       cleanupPending: true,
       cleanupWarnings: ["stale warning"],
       conversationId,
+      runtimeSessionName: "",
       workerPid: holderPid,
       workerStartedAt: holderStartedAt,
       heartbeatAt: staleAt,
@@ -3346,7 +3389,26 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   if (process.platform === "linux") {
     assert(configSource.includes("--disable-ipv6"), "WSL/Linux defaults should be able to disable IPv6 when running under WSL to avoid ChatGPT reachability failures");
   assert(configSource.includes('runMode: defaultBrowserRunMode()'), "oracle config should derive the default browser run mode from platform-aware defaults instead of hardcoding headless");
+  assert(configSource.includes('export const RESPONSE_FORMATS = ["markdown", "plain"] as const;'), "oracle config should define allowed response default formats");
+  assert(configSource.includes('export type OracleResponseDefaultFormat = (typeof RESPONSE_FORMATS)[number];'), "oracle config should export the response default format type");
+  assert(configSource.includes('const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup", "response"])'), "oracle project config should allow response.* overrides");
+  assert(configSource.includes('response: {') && configSource.includes('defaultFormat: OracleResponseDefaultFormat;'), "oracle config should define response.defaultFormat in the config schema");
+  assert(configSource.includes('response: {\n    defaultFormat: "markdown",\n  },'), "oracle default config should prefer markdown on the worktree branch");
+  assert(configSource.includes('const response = expectObject(root.response, "response");'), "oracle config validation should read the response config section");
+  assert(configSource.includes('defaultFormat: expectEnum(response.defaultFormat, "response.defaultFormat", RESPONSE_FORMATS),'), "oracle config validation should reject invalid response.defaultFormat values");
   }
+  assert(jobsSource.includes('preferredResponseFormat?: "markdown" | "plain";'), "OracleJob should include preferredResponseFormat");
+  assert(jobsSource.includes("preferredResponsePath?: string;"), "OracleJob should include preferredResponsePath");
+  assert(commandsSource.includes("function findAvailableResponsePath("), "/oracle-read should resolve response previews through a fallback helper");
+  assert(commandsSource.includes("await loadResponsePreview(job.preferredResponsePath, job.responsePath)"), "/oracle-read should fall back from missing preferred artifacts to response.md");
+  assert(toolsSource.includes("preferredResponseFormat: job.preferredResponseFormat,"), "oracle_read details should expose preferredResponseFormat");
+  assert(toolsSource.includes("preferredResponsePath: job.preferredResponsePath,"), "oracle_read details should expose preferredResponsePath");
+  assert(toolsSource.includes("function findAvailableResponsePath("), "oracle_read tool should resolve response previews through a fallback helper");
+  assert(toolsSource.includes("await loadResponsePreview("), "oracle_read tool should fall back from missing preferred artifacts to response.md");
+  assert(sharedObservabilityTypesSource.includes('preferredResponseFormat?: "markdown" | "plain";'), "shared observability helper types should expose preferredResponseFormat");
+  assert(sharedObservabilityTypesSource.includes("preferredResponsePath?: string;"), "shared observability helper types should expose preferredResponsePath");
+  assert(!pollerSource.includes("preferredResponsePath"), "Phase D first pass should not make poller wake-up transport format-aware");
+  assert(sharedObservabilitySource.includes('Response file: ${options.responsePath ?? job.responsePath ?? `response unavailable for ${job.id}`}'), "wake-up content should still reference legacy response path contract in Phase D first pass");
   assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
   assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
@@ -3394,6 +3456,11 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
+  assert(workerSource.includes("function resolvePreferredResponse(job, sidecarPaths) {"), "worker should define a helper to resolve preferred response metadata after persistence");
+  assert(workerSource.includes("const preferredResponse = resolvePreferredResponse(currentJob, sidecarPaths);"), "worker should resolve preferred response metadata after persistence");
+  assert(workerSource.includes('const preferred = job.config?.response?.defaultFormat === "plain" ? "plain" : "markdown";'), "worker should default legacy jobs without response config back to markdown");
+  assert(workerSource.includes("preferredResponseFormat: preferredResponse.format,"), "worker should persist preferredResponseFormat on terminal jobs");
+  assert(workerSource.includes("preferredResponsePath: preferredResponse.path,"), "worker should persist preferredResponsePath on terminal jobs");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
   const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
   assert(
@@ -4230,6 +4297,8 @@ function testSharedObservabilityHelpers(): void {
     markdownResponsePath?: string;
     structuredResponsePath?: string;
     referencesPath?: string;
+    preferredResponseFormat?: "markdown" | "plain";
+    preferredResponsePath?: string;
   };
 
   const job = markOracleJobCreated<ObservabilityFixture>({
@@ -4250,6 +4319,8 @@ function testSharedObservabilityHelpers(): void {
     markdownResponsePath: "/tmp/response.rich.md",
     structuredResponsePath: "/tmp/response.rich.json",
     referencesPath: "/tmp/response.references.json",
+    preferredResponseFormat: "markdown",
+    preferredResponsePath: "/tmp/response.rich.md",
   }, {
     at: "2026-01-01T00:00:00.000Z",
     source: "oracle:test",
@@ -4263,7 +4334,7 @@ function testSharedObservabilityHelpers(): void {
   });
   assert(summary.includes("queue-position: 2 of 3 global") && summary.includes("last-event:"), "shared observability helpers should include queue position and latest lifecycle breadcrumbs in non-terminal job summaries");
   assert(summary.includes("worker-log: /tmp/worker.log") && summary.includes("Preview body") && summary.includes("response: /tmp/response.md"), "shared observability helpers should include worker log paths, visible response paths, and optional response previews");
-  assert(summary.includes("response-extraction-mode: structured-dom") && summary.includes("markdown-response: /tmp/response.rich.md") && summary.includes("structured-response: /tmp/response.rich.json") && summary.includes("references: /tmp/response.references.json"), "shared observability helpers should surface additive rich-response metadata lines when those sidecar paths are available");
+  assert(summary.includes("response-extraction-mode: structured-dom") && summary.includes("markdown-response: /tmp/response.rich.md") && summary.includes("structured-response: /tmp/response.rich.json") && summary.includes("references: /tmp/response.references.json") && summary.includes("preferred-response-format: markdown") && summary.includes("preferred-response: /tmp/response.rich.md"), "shared observability helpers should surface additive rich-response metadata lines when those sidecar paths are available");
 
   const freshHeartbeatSummary = formatOracleJobSummary(transitionOracleJobPhase(job, "awaiting_response", {
     at: "2026-01-01T00:00:05.000Z",
@@ -4313,7 +4384,7 @@ function testSharedObservabilityHelpers(): void {
     responseAvailable: true,
     artifactsPath: "/tmp/artifacts",
   });
-  assert(wakeupContent.includes("Use /oracle-read job-observe") && wakeupContent.includes("/oracle-status job-observe") && wakeupContent.includes("oracle_read({ jobId: \"job-observe\" })") && wakeupContent.includes("Last event:") && wakeupContent.includes("Response file: /tmp/response.md"), "shared observability helpers should include both the /oracle-read guidance, /oracle-status fallback, agent-facing oracle_read hint, and the persisted response path when a response file exists");
+  assert(wakeupContent.includes("Use /oracle-read job-observe") && wakeupContent.includes("/oracle-status job-observe") && wakeupContent.includes("oracle_read({ jobId: \"job-observe\" })") && wakeupContent.includes("Last event:") && wakeupContent.includes("Response file: /tmp/response.md") && !wakeupContent.includes("preferred-response:"), "shared observability helpers should include both the /oracle-read guidance, /oracle-status fallback, agent-facing oracle_read hint, and the persisted response path when a response file exists without making wake-up content format-aware");
 
   const failedWakeupContent = buildOracleWakeupNotificationContent(transitionOracleJobPhase(job, "failed", {
     at: "2026-01-01T00:00:20.000Z",

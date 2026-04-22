@@ -4,7 +4,8 @@
 // Usage: Imported by the oracle extension entrypoint and sanity tests to register tools against the pi API.
 // Invariants/Assumptions: The pi runtime validates TypeBox schemas before execute, while execute owns semantic normalization.
 import { randomUUID } from "node:crypto";
-import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { lstat, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
 import { runOracleAuthBootstrap } from "./auth.js";
@@ -91,6 +92,32 @@ const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = MAX_ARCHIVE_BYTES;
 const ARCHIVE_COMMAND_TIMEOUT_MS = 120_000;
 const ARCHIVE_COMMAND_KILL_GRACE_MS = 2_000;
 const ARCHIVE_PIPE_FAILURE_ERROR_CODES = new Set(["EPIPE", "ERR_STREAM_DESTROYED"]);
+
+function getResponsePreviewPaths(preferredResponsePath: string | undefined, responsePath: string): string[] {
+  return [preferredResponsePath, responsePath].filter((path, index, paths): path is string => Boolean(path) && paths.indexOf(path) === index);
+}
+
+function findAvailableResponsePath(preferredResponsePath: string | undefined, responsePath: string): string | undefined {
+  return getResponsePreviewPaths(preferredResponsePath, responsePath).find((path) => existsSync(path));
+}
+
+async function loadResponsePreview(preferredResponsePath: string | undefined, responsePath: string): Promise<{
+  responseAvailable: boolean;
+  responsePreview?: string;
+}> {
+  for (const previewPath of getResponsePreviewPaths(preferredResponsePath, responsePath)) {
+    if (!existsSync(previewPath)) continue;
+    try {
+      return {
+        responseAvailable: true,
+        responsePreview: (await readFile(previewPath, "utf8")).slice(0, 4000),
+      };
+    } catch {
+      continue;
+    }
+  }
+  return { responseAvailable: false };
+}
 
 const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".git",
@@ -681,6 +708,8 @@ function redactJobDetails(
     conversationId: job.conversationId,
     responsePath: job.responsePath,
     responseFormat: job.responseFormat,
+    preferredResponseFormat: job.preferredResponseFormat,
+    preferredResponsePath: job.preferredResponsePath,
     responseAvailable: options.responseAvailable ?? false,
     responsePreview: options.responsePreview,
     artifactsPath: `${getJobDir(job.id)}/artifacts`,
@@ -1380,15 +1409,10 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           : job;
         const current = latest ?? readJob(job.id) ?? job;
 
-        let responsePreview: string | undefined;
-        let responseAvailable = false;
-        try {
-          const response = await import("node:fs/promises").then((fs) => fs.readFile(current.responsePath || "", "utf8"));
-          responsePreview = response.slice(0, 4000);
-          responseAvailable = true;
-        } catch {
-          responsePreview = undefined;
-        }
+        const { responseAvailable, responsePreview } = await loadResponsePreview(
+          current.preferredResponsePath,
+          current.responsePath,
+        );
 
         const queuePosition = current.status === "queued" ? getQueuePosition(current.id) : undefined;
         return {

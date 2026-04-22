@@ -15,6 +15,8 @@ export type OracleModelFamily = (typeof MODEL_FAMILIES)[number];
 
 export const EFFORTS = ["light", "standard", "extended", "heavy"] as const;
 export type OracleEffort = (typeof EFFORTS)[number];
+export const RESPONSE_FORMATS = ["markdown", "plain"] as const;
+export type OracleResponseDefaultFormat = (typeof RESPONSE_FORMATS)[number];
 
 /**
  * Canonical preset registry for `oracle_submit` preset selection.
@@ -183,7 +185,7 @@ export const CLONE_STRATEGIES = ["apfs-clone", "copy"] as const;
 export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
-const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
+const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup", "response"]);
 const CURRENT_PLATFORM = process.platform;
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const DEFAULT_LINUX_CHROME_EXECUTABLE_CANDIDATES = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"] as const;
@@ -193,6 +195,9 @@ const DEFAULT_LINUX_CHROME_USER_DATA_DIR = join(homedir(), ".config", "google-ch
 export interface OracleConfig {
   defaults: {
     preset: OracleSubmitPresetId;
+  };
+  response: {
+    defaultFormat: OracleResponseDefaultFormat;
   };
   browser: {
     sessionPrefix: string;
@@ -351,6 +356,9 @@ export function formatOracleAuthConfigSummary(details: OracleConfigLoadDetails):
 export const DEFAULT_CONFIG: OracleConfig = {
   defaults: {
     preset: "pro_extended",
+  },
+  response: {
+    defaultFormat: "markdown",
   },
   browser: {
     sessionPrefix: "oracle",
@@ -549,6 +557,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
 
   const defaults = expectObject(root.defaults, "defaults");
   const preset = expectEnum(defaults.preset, "defaults.preset", PRESET_IDS);
+  const response = expectObject(root.response, "response");
 
   const browser = expectObject(root.browser, "browser");
   const auth = expectObject(root.auth, "auth");
@@ -566,6 +575,9 @@ function validateOracleConfig(value: unknown): OracleConfig {
   return {
     defaults: {
       preset,
+    },
+    response: {
+      defaultFormat: expectEnum(response.defaultFormat, "response.defaultFormat", RESPONSE_FORMATS),
     },
     browser: {
       sessionPrefix: expectString(browser.sessionPrefix, "browser.sessionPrefix"),
