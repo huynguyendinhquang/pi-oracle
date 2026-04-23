@@ -905,10 +905,6 @@ async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): P
     (preset) => preset.modelFamily === "instant" && preset.autoSwitchToThinking === false,
     "expected an instant preset without auto-switch",
   );
-  const instantAutoSwitchPreset = findPresetId(
-    (preset) => preset.modelFamily === "instant" && preset.autoSwitchToThinking === true,
-    "expected an instant preset with auto-switch enabled",
-  );
 
   const thinkingJobId = `sanity-job-${randomUUID()}`;
   const thinkingRuntime = {
@@ -963,31 +959,6 @@ async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): P
   assert(instantJob?.selection?.autoSwitchToThinking === false, "instant presets without auto-switch should keep it disabled");
   await cleanupJob(instantJobId);
 
-  const instantAutoSwitchJobId = `sanity-job-${randomUUID()}`;
-  const instantAutoSwitchRuntime = {
-    runtimeId: `runtime-${randomUUID()}`,
-    runtimeSessionName: `oracle-runtime-${randomUUID()}`,
-    runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
-    seedGeneration: new Date().toISOString(),
-  };
-  await createJob(
-    instantAutoSwitchJobId,
-    {
-      prompt: "sanity",
-      files: ["docs/ORACLE_DESIGN.md"],
-      selection: resolveOracleSubmitPreset(instantAutoSwitchPreset),
-      requestSource: "tool",
-    },
-    cwd,
-    sessionId,
-    config,
-    instantAutoSwitchRuntime,
-  );
-  const instantAutoSwitchJob = readJob(instantAutoSwitchJobId);
-  assert(instantAutoSwitchJob?.selection?.preset === instantAutoSwitchPreset, "instant auto-switch jobs should persist the selected preset id");
-  assert(instantAutoSwitchJob?.selection?.autoSwitchToThinking === true, "instant auto-switch presets should enable autoSwitchToThinking");
-  assert(instantAutoSwitchJob?.selection?.effort === undefined, "instant auto-switch jobs should not persist effort");
-  await cleanupJob(instantAutoSwitchJobId);
 }
 
 async function testOracleSubmitPresetGuardrails(): Promise<void> {
@@ -1019,15 +990,6 @@ async function testOracleSubmitPresetGuardrails(): Promise<void> {
     }
   }
 
-  const instantAutoSwitchPreset = findPresetId(
-    (preset) => preset.modelFamily === "instant" && preset.autoSwitchToThinking,
-    "expected an instant auto-switch oracle submit preset",
-  );
-  const mixedHyphenSpaceLabel = "Instant Auto-switch to Thinking Enabled";
-  assert(
-    coerceOracleSubmitPresetId(mixedHyphenSpaceLabel) === instantAutoSwitchPreset,
-    `mixed hyphen/space preset label variant ${mixedHyphenSpaceLabel} should normalize to ${instantAutoSwitchPreset}`,
-  );
 
   assertThrows(
     () => resolveOracleSubmitPreset("__not_a_real_preset__" as OracleSubmitPresetId),
@@ -1785,6 +1747,7 @@ async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
     assert(invalidPresetError?.rejectedValue === "not-a-real-preset", "oracle submit should report the rejected preset value");
     const allowedValues = invalidPresetError?.allowedValues;
     assert(Array.isArray(allowedValues) && allowedValues.includes("instant") && allowedValues.includes("thinking_standard"), "oracle submit should report canonical preset ids as allowedValues");
+    assert(!allowedValues.includes("instant_auto_switch"), "oracle submit should not advertise deprecated instant_auto_switch preset");
     assert(typeof invalidPresetError?.suggestedNextStep === "string", "oracle submit should include a retry hint for invalid preset errors");
     const invalidPresetPatch = await toolResultHandler({
       toolName: "oracle_submit",
@@ -3121,7 +3084,6 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     ["Pro-standard", "pro_standard"],
     ["Pro-extended", "pro_extended"],
     ["Thinking-standard", "thinking_standard"],
-    ["Instant Auto-switch to Thinking Enabled", "instant_auto_switch"],
   ];
 
   assert(!commandsSource.includes('registerCommand("oracle"'), "/oracle should not be registered as an extension command");

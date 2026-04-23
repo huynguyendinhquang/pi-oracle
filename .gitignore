@@ -2,6 +2,7 @@ node_modules/
 .DS_Store
 .pi/
 .oracle-context/
+.oracle/
 .scratchpad.md
 progress.md
 review.md

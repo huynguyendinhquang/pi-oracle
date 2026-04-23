@@ -30,7 +30,6 @@ export const ORACLE_SUBMIT_PRESETS = {
   thinking_extended: { label: "Thinking - Extended", modelFamily: "thinking" as const, effort: "extended" as const, autoSwitchToThinking: false },
   thinking_heavy: { label: "Thinking - Heavy", modelFamily: "thinking" as const, effort: "heavy" as const, autoSwitchToThinking: false },
   instant: { label: "Instant", modelFamily: "instant" as const, autoSwitchToThinking: false },
-  instant_auto_switch: { label: "Instant - Auto-switch to Thinking Enabled", modelFamily: "instant" as const, autoSwitchToThinking: true },
 } as const;
 
 export type OracleSubmitPresetId = keyof typeof ORACLE_SUBMIT_PRESETS;
