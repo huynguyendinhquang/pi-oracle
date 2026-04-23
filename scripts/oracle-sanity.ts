@@ -1298,12 +1298,14 @@ async function testWorkspaceRootFallsBackToProjectMarkersWithoutGit(): Promise<v
     await mkdir(subdirCwd, { recursive: true, mode: 0o700 });
     await writeFile(join(projectRoot, "package.json"), '{"name":"workspace-root-markers"}\n', { encoding: "utf8", mode: 0o600 });
     await writeFile(join(projectRoot, "README.md"), "# workspace markers\n", { encoding: "utf8", mode: 0o600 });
-    await writeFile(join(projectRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_light" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(projectRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_light" }, storage: { jobsDir: ".oracle/jobs" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 
     const workspaceRoot = getProjectId(subdirCwd);
     assert(workspaceRoot === getProjectId(projectRoot), "workspace-root detection should fall back to shared project markers when no git root exists");
     assert(getOracleConfigLoadDetails(subdirCwd).projectConfigPath === join(workspaceRoot, ".pi", "extensions", "oracle.json"), "config loading without git should still resolve the workspace-root project config path from subdirectories");
-    assert(loadOracleConfig(subdirCwd).defaults.preset === "thinking_light", "config loading without git should still honor workspace-root project overrides from subdirectories");
+    const workspaceConfig = loadOracleConfig(subdirCwd);
+    assert(workspaceConfig.defaults.preset === "thinking_light", "config loading without git should still honor workspace-root project overrides from subdirectories");
+    assert(workspaceConfig.storage.jobsDir === join(workspaceRoot, ".oracle", "jobs"), "config loading without git should resolve storage.jobsDir relative to the workspace root from subdirectories");
     assert(resolveArchiveInputs(workspaceRoot, ["README.md"])[0]?.relative === "README.md", "archive input resolution without git should still allow workspace-root files from the derived project root");
     assert(resolveArchiveInputs(workspaceRoot, ["."])[0]?.relative === ".", "archive input resolution without git should still preserve '.' as the explicit whole-workspace sentinel");
 
@@ -1311,9 +1313,11 @@ async function testWorkspaceRootFallsBackToProjectMarkersWithoutGit(): Promise<v
     await mkdir(innerSubdir, { recursive: true, mode: 0o700 });
     await writeFile(join(outerRoot, "package.json"), '{"name":"outer-workspace"}\n', { encoding: "utf8", mode: 0o600 });
     await writeFile(join(innerRoot, "package.json"), '{"name":"inner-workspace"}\n', { encoding: "utf8", mode: 0o600 });
-    await writeFile(join(innerRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_heavy" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(innerRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_heavy" }, storage: { jobsDir: ".oracle/jobs" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     assert(getProjectId(innerSubdir) === getProjectId(innerRoot), "workspace-root detection without git should prefer the nearest project markers so nested non-git projects do not widen to parent workspaces");
-    assert(loadOracleConfig(innerSubdir).defaults.preset === "thinking_heavy", "nested non-git subdirectories should load the nearest project config instead of an outer marker tree");
+    const innerConfig = loadOracleConfig(innerSubdir);
+    assert(innerConfig.defaults.preset === "thinking_heavy", "nested non-git subdirectories should load the nearest project config instead of an outer marker tree");
+    assert(innerConfig.storage.jobsDir === join(innerRoot, ".oracle", "jobs"), "nested non-git subdirectories should resolve storage.jobsDir relative to the nearest project root");
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }
@@ -3258,7 +3262,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("Configured oracle browser executable does not exist"), "runtime submit preflight should surface missing configured browser executables clearly");
   assert(runtimeSource.includes("Oracle prerequisite not found on PATH"), "runtime submit preflight should surface missing local dependencies clearly");
   assert(runtimeSource.includes('await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles")'), "runtime submit preflight should validate runtime profile directory writability before submit");
-  assert(runtimeSource.includes('await assertWritableDirectory(ORACLE_JOBS_DIR, "jobs")'), "runtime submit preflight should validate jobs directory writability before submit");
+  assert(runtimeSource.includes('await assertWritableDirectory(getEffectiveOracleJobsDir(), "jobs")'), "runtime submit preflight should validate jobs directory writability before submit");
   assert(runtimeSource.includes("assertOracleSubmitPrerequisites"), "runtime should expose a submit-side preflight helper for locally knowable blockers");
   assert(runtimeSource.includes("Oracle auth seed profile is not readable"), "runtime submit preflight should surface unreadable auth seed profiles clearly");
   assert(toolsSource.includes("const projectCwd = getProjectId(ctx.cwd);"), "oracle submit should derive a stable workspace-root cwd before loading config or resolving archives");
@@ -3391,11 +3395,14 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(configSource.includes('runMode: defaultBrowserRunMode()'), "oracle config should derive the default browser run mode from platform-aware defaults instead of hardcoding headless");
   assert(configSource.includes('export const RESPONSE_FORMATS = ["markdown", "plain"] as const;'), "oracle config should define allowed response default formats");
   assert(configSource.includes('export type OracleResponseDefaultFormat = (typeof RESPONSE_FORMATS)[number];'), "oracle config should export the response default format type");
-  assert(configSource.includes('const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup", "response"])'), "oracle project config should allow response.* overrides");
+  assert(configSource.includes('const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup", "response", "storage"])'), "oracle project config should allow response.* and storage.* overrides");
   assert(configSource.includes('response: {') && configSource.includes('defaultFormat: OracleResponseDefaultFormat;'), "oracle config should define response.defaultFormat in the config schema");
-  assert(configSource.includes('response: {\n    defaultFormat: "markdown",\n  },'), "oracle default config should prefer markdown on the worktree branch");
+  assert(configSource.includes('storage: {') && configSource.includes('jobsDir?: string;'), "oracle config should define optional storage.jobsDir in the config schema");
+  assert(configSource.includes('jobsDir: undefined,'), "oracle default config should leave storage.jobsDir unset so /tmp stays the fallback");
   assert(configSource.includes('const response = expectObject(root.response, "response");'), "oracle config validation should read the response config section");
-  assert(configSource.includes('defaultFormat: expectEnum(response.defaultFormat, "response.defaultFormat", RESPONSE_FORMATS),'), "oracle config validation should reject invalid response.defaultFormat values");
+  assert(configSource.includes('const storage = expectObject(root.storage, "storage");'), "oracle config validation should read the storage config section");
+  assert(configSource.includes('jobsDir: expectOptionalPath(storage.jobsDir, "storage.jobsDir"),'), "oracle config validation should accept optional storage.jobsDir");
+  assert(configSource.includes('jobsDir: resolveConfiguredOracleJobsDir(cwd, config),'), "loadOracleConfig should resolve storage.jobsDir relative to the project root");
   }
   assert(jobsSource.includes('preferredResponseFormat?: "markdown" | "plain";'), "OracleJob should include preferredResponseFormat");
   assert(jobsSource.includes("preferredResponsePath?: string;"), "OracleJob should include preferredResponsePath");
@@ -3411,6 +3418,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(sharedObservabilitySource.includes('Response file: ${options.responsePath ?? job.responsePath ?? `response unavailable for ${job.id}`}'), "wake-up content should still reference legacy response path contract in Phase D first pass");
   assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
   assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
+  assert(toolsSource.includes('setConfiguredOracleJobsDir(resolveConfiguredOracleJobsDir(projectCwd, config));'), "oracle submit should sync configured jobs dir from config before worker launch");
+  assert(jobsSource.includes('[ORACLE_JOBS_DIR_ENV]: getOracleJobsDir(),'), "worker spawn should pass the effective jobs dir through PI_ORACLE_JOBS_DIR");
+  assert(toolsSource.includes('storage.jobsDir in oracle config'), "jobs-dir unwritable guidance should mention the new storage.jobsDir config option");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
   assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
   assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");

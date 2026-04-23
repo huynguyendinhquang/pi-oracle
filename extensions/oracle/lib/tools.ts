@@ -18,6 +18,7 @@ import {
   coerceOracleSubmitPresetId,
   loadOracleConfig,
   ORACLE_SUBMIT_PRESET_IDS,
+  resolveConfiguredOracleJobsDir,
   resolveOracleSubmitPreset,
 } from "./config.js";
 import {
@@ -37,6 +38,7 @@ import {
   pruneTerminalOracleJobs,
   reconcileStaleOracleJobs,
   resolveArchiveInputs,
+  setConfiguredOracleJobsDir,
   sha256File,
   shouldAdvanceQueueAfterCancellation,
   spawnWorker,
@@ -826,7 +828,7 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
       code: "jobs_dir_unwritable",
       message,
       rejectedValue: message.replace(/^Oracle jobs directory is not writable: /, "").replace(/\. Fix its permissions or configure a writable path, then retry\.$/, ""),
-      suggestedNextStep: "Fix PI_ORACLE_JOBS_DIR permissions or point it at a writable directory, then retry.",
+      suggestedNextStep: "Fix PI_ORACLE_JOBS_DIR permissions, or set storage.jobsDir in oracle config to a writable directory, then retry.",
     };
   }
 
@@ -1051,6 +1053,11 @@ async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePrefligh
   };
 }
 
+function syncConfiguredJobsDir(cwd: string): void {
+  const config = loadOracleConfig(cwd);
+  setConfiguredOracleJobsDir(resolveConfiguredOracleJobsDir(cwd, config));
+}
+
 export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWorkerPath = workerPath): void {
   pi.on("tool_result", async (event) => {
     if (!ORACLE_TOOL_NAMES.has(event.toolName as OracleToolName)) return;
@@ -1072,6 +1079,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     ],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      syncConfiguredJobsDir(ctx.cwd);
       const details = await runOraclePreflight(ctx);
       return {
         content: [{ type: "text" as const, text: formatOraclePreflightResponse(details) }],
@@ -1092,6 +1100,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     ],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+        syncConfiguredJobsDir(ctx.cwd);
       try {
         const projectCwd = getProjectId(ctx.cwd);
         const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd);
@@ -1137,6 +1146,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       try {
         const projectCwd = getProjectId(ctx.cwd);
         const config = loadOracleConfig(projectCwd);
+        setConfiguredOracleJobsDir(resolveConfiguredOracleJobsDir(projectCwd, config));
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
         const projectId = getProjectId(projectCwd);
         const sessionId = getSessionId(originSessionFile, projectId);
@@ -1396,6 +1406,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
+        syncConfiguredJobsDir(ctx.cwd);
         const job = readJob(params.jobId);
         if (!job || job.projectId !== getProjectId(ctx.cwd)) {
           throw new Error(`Oracle job not found in this project: ${params.jobId}`);
@@ -1449,6 +1460,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     parameters: ORACLE_CANCEL_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
+        syncConfiguredJobsDir(ctx.cwd);
         const job = readJob(params.jobId);
         if (!job || job.projectId !== getProjectId(ctx.cwd)) {
           throw new Error(`Oracle job not found in this project: ${params.jobId}`);

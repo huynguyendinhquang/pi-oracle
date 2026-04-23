@@ -6,9 +6,9 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { loadOracleConfig } from "./lib/config.js";
+import { loadOracleConfig, resolveConfiguredOracleJobsDir } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
-import { getSessionFile, pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
+import { getSessionFile, pruneTerminalOracleJobs, reconcileStaleOracleJobs, setConfiguredOracleJobsDir } from "./lib/jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./lib/locks.js";
 import { refreshOracleStatus, startPoller, stopPoller } from "./lib/poller.js";
 import { promoteQueuedJobs } from "./lib/queue.js";
@@ -46,6 +46,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
       }
 
       const config = loadOracleConfig(ctx.cwd);
+      setConfiguredOracleJobsDir(resolveConfiguredOracleJobsDir(ctx.cwd, config));
       void runStartupMaintenance(ctx).catch((error) => {
         const message = `Oracle startup maintenance failed: ${error instanceof Error ? error.message : String(error)}`;
         console.error(message);

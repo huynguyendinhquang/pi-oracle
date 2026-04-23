@@ -28,6 +28,7 @@ import type { OracleJobLifecycleEvent as SharedOracleJobLifecycleEvent, OracleJo
 import { hasDurableWorkerHandoff as sharedHasDurableWorkerHandoff } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive, readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import type { OracleConfig, OracleResolvedSelection } from "./config.js";
+import { getEffectiveOracleJobsDir, ORACLE_JOBS_DIR_ENV, setConfiguredOracleJobsDir, DEFAULT_ORACLE_JOBS_DIR } from "./jobs-dir.js";
 import { withJobLock, withLock } from "./locks.js";
 import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId, requirePersistedSessionFile, type OracleCleanupReport } from "./runtime.js";
 
@@ -47,9 +48,7 @@ const ORACLE_JOB_DIR_RM_MAX_RETRIES = 5;
 const ORACLE_JOB_DIR_RM_RETRY_DELAY_MS = 50;
 const ORACLE_COMPLETE_JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const ORACLE_FAILED_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-export const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
-export const ORACLE_JOBS_DIR_ENV = "PI_ORACLE_JOBS_DIR";
-const ORACLE_JOBS_DIR = process.env[ORACLE_JOBS_DIR_ENV]?.trim() || DEFAULT_ORACLE_JOBS_DIR;
+export { DEFAULT_ORACLE_JOBS_DIR, ORACLE_JOBS_DIR_ENV, setConfiguredOracleJobsDir };
 export const ORACLE_RESPONSE_FILE_NAME = "response.md";
 export const ORACLE_STRUCTURED_RESPONSE_FILE_NAME = "response.rich.json";
 export const ORACLE_MARKDOWN_RESPONSE_FILE_NAME = "response.rich.md";
@@ -213,18 +212,19 @@ export function getSessionFile(ctx: ExtensionContext): string | undefined {
 }
 
 export function getOracleJobsDir(): string {
-  return ORACLE_JOBS_DIR;
+  return getEffectiveOracleJobsDir();
 }
 
 export function getJobDir(id: string): string {
-  return join(ORACLE_JOBS_DIR, `oracle-${id}`);
+  return join(getOracleJobsDir(), `oracle-${id}`);
 }
 
 export function listOracleJobDirs(): string[] {
-  if (!existsSync(ORACLE_JOBS_DIR)) return [];
-  return readdirSync(ORACLE_JOBS_DIR)
+  const jobsDir = getOracleJobsDir();
+  if (!existsSync(jobsDir)) return [];
+  return readdirSync(jobsDir)
     .filter((name) => name.startsWith("oracle-"))
-    .map((name) => join(ORACLE_JOBS_DIR, name))
+    .map((name) => join(jobsDir, name))
     .filter((path) => existsSync(join(path, "job.json")));
 }
 
@@ -1021,7 +1021,12 @@ export async function spawnWorker(
   jobId: string,
 ): Promise<{ pid: number | undefined; nonce: string; startedAt: string | undefined }> {
   const nonce = randomUUID();
-  const child = await spawnDetachedNodeProcess(workerPath, [jobId, nonce]);
+  const child = await spawnDetachedNodeProcess(workerPath, [jobId, nonce], {
+    env: {
+      ...process.env,
+      [ORACLE_JOBS_DIR_ENV]: getOracleJobsDir(),
+    },
+  });
   return {
     pid: child.pid,
     nonce,

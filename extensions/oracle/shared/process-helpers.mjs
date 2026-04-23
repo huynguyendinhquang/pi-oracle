@@ -126,12 +126,14 @@ export async function terminateTrackedProcess(pid, startedAt, options = {}) {
 /**
  * @param {string} scriptPath
  * @param {string[]} args
+ * @param {{ env?: NodeJS.ProcessEnv }} [options]
  * @returns {Promise<OracleDetachedProcessHandle>}
  */
-export async function spawnDetachedNodeProcess(scriptPath, args = []) {
+export async function spawnDetachedNodeProcess(scriptPath, args = [], options = {}) {
   const child = spawn(process.execPath, [scriptPath, ...args], {
     detached: true,
     stdio: "ignore",
+    env: options.env,
   });
   child.unref();
   return {

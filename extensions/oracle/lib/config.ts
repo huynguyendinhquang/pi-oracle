@@ -185,7 +185,7 @@ export const CLONE_STRATEGIES = ["apfs-clone", "copy"] as const;
 export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
-const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup", "response"]);
+const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup", "response", "storage"]);
 const CURRENT_PLATFORM = process.platform;
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const DEFAULT_LINUX_CHROME_EXECUTABLE_CANDIDATES = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"] as const;
@@ -198,6 +198,9 @@ export interface OracleConfig {
   };
   response: {
     defaultFormat: OracleResponseDefaultFormat;
+  };
+  storage: {
+    jobsDir?: string;
   };
   browser: {
     sessionPrefix: string;
@@ -360,6 +363,9 @@ export const DEFAULT_CONFIG: OracleConfig = {
   response: {
     defaultFormat: "markdown",
   },
+  storage: {
+    jobsDir: undefined,
+  },
   browser: {
     sessionPrefix: "oracle",
     authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
@@ -480,6 +486,19 @@ function expectOptionalAbsoluteNormalizedPath(value: unknown, path: string): str
   return expectAbsoluteNormalizedPath(value, path);
 }
 
+function expectOptionalPath(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  return expandHomePath(expectString(value, path));
+}
+
+function resolveConfigPathFromProjectRoot(cwd: string, value: string): string {
+  return normalize(isAbsolute(value) ? value : join(getProjectId(cwd), value));
+}
+
+export function resolveConfiguredOracleJobsDir(cwd: string, config: OracleConfig): string | undefined {
+  return config.storage.jobsDir ? resolveConfigPathFromProjectRoot(cwd, config.storage.jobsDir) : undefined;
+}
+
 function expectStringArray(value: unknown, path: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim() === "")) {
     throw new Error(`Invalid oracle config: ${path} must be an array of non-empty strings`);
@@ -558,6 +577,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
   const defaults = expectObject(root.defaults, "defaults");
   const preset = expectEnum(defaults.preset, "defaults.preset", PRESET_IDS);
   const response = expectObject(root.response, "response");
+  const storage = expectObject(root.storage, "storage");
 
   const browser = expectObject(root.browser, "browser");
   const auth = expectObject(root.auth, "auth");
@@ -578,6 +598,9 @@ function validateOracleConfig(value: unknown): OracleConfig {
     },
     response: {
       defaultFormat: expectEnum(response.defaultFormat, "response.defaultFormat", RESPONSE_FORMATS),
+    },
+    storage: {
+      jobsDir: expectOptionalPath(storage.jobsDir, "storage.jobsDir"),
     },
     browser: {
       sessionPrefix: expectString(browser.sessionPrefix, "browser.sessionPrefix"),
@@ -619,5 +642,12 @@ export function loadOracleConfig(cwd: string): OracleConfig {
   const details = getOracleConfigLoadDetails(cwd);
   const globalConfig = readJson(details.agentConfigPath);
   const projectConfig = filterProjectConfig(readJson(details.projectConfigPath));
-  return validateOracleConfig(deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig));
+  const config = validateOracleConfig(deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig));
+  return {
+    ...config,
+    storage: {
+      jobsDir: resolveConfiguredOracleJobsDir(cwd, config),
+    },
+  };
 }
+

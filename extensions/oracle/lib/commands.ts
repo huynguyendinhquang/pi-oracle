@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
+import { loadOracleConfig, resolveConfiguredOracleJobsDir } from "./config.js";
 import { runOracleAuthBootstrap } from "./auth.js";
 import {
   cancelOracleJob,
@@ -19,6 +20,7 @@ import {
   readJob,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
+  setConfiguredOracleJobsDir,
   shouldAdvanceQueueAfterCancellation,
 } from "./jobs.js";
 import { getQueuePosition, promoteQueuedJobs } from "./queue.js";
@@ -87,10 +89,16 @@ function readScopedJob(jobId: string, cwd: string) {
   return job;
 }
 
+function syncConfiguredJobsDir(cwd: string): void {
+  const config = loadOracleConfig(cwd);
+  setConfiguredOracleJobsDir(resolveConfiguredOracleJobsDir(cwd, config));
+}
+
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT cookies from real Chrome into the oracle auth seed profile",
     handler: async (_args, ctx) => {
+      syncConfiguredJobsDir(ctx.cwd);
       ctx.ui.notify("Syncing ChatGPT cookies from real Chrome into the oracle auth seed profile…", "info");
       try {
         const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd);
@@ -104,6 +112,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
   pi.registerCommand("oracle-status", {
     description: "Show oracle job status and recent job ids",
     handler: async (args, ctx) => {
+      syncConfiguredJobsDir(ctx.cwd);
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
       if (!jobId) {
@@ -131,6 +140,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
   pi.registerCommand("oracle-read", {
     description: "Show oracle job status plus saved response preview",
     handler: async (args, ctx) => {
+      syncConfiguredJobsDir(ctx.cwd);
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
       if (!jobId) {
@@ -156,6 +166,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
   pi.registerCommand("oracle-cancel", {
     description: "Cancel a queued or active oracle job by id",
     handler: async (args, ctx) => {
+      syncConfiguredJobsDir(ctx.cwd);
       const jobId = args.trim();
       if (!jobId) {
         ctx.ui.notify("Usage: /oracle-cancel <job-id>\nUse /oracle-status to find the job id you want to cancel.", "warning");
@@ -184,6 +195,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
   pi.registerCommand("oracle-clean", {
     description: "Remove oracle temp files for terminal jobs; recently woken jobs may stay retained briefly",
     handler: async (args, ctx: ExtensionCommandContext) => {
+      syncConfiguredJobsDir(ctx.cwd);
       const target = args.trim();
       if (!target) {
         ctx.ui.notify("Usage: /oracle-clean <job-id|all>", "warning");

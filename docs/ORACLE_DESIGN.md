@@ -21,7 +21,7 @@ Create a `pi` extension that lets the user or agent consult ChatGPT.com through 
 - durable response/artifact persistence plus best-effort wake-the-agent behavior when the oracle response is ready
 - oracle requires a persisted pi session identity; in-memory/no-session contexts are rejected instead of risking cross-session wake-up misdelivery
 - legacy project-scoped jobs from the older no-session model remain inspectable by project, but are treated as manual/status-only instead of being rebound to a different persisted session for wake-up delivery
-- persisted responses and artifacts under `/tmp`
+- persisted responses and artifacts under `/tmp` by default, with optional project-local job storage via `storage.jobsDir` config or `PI_ORACLE_JOBS_DIR` override
 - optional same-thread follow-up questions later
 
 ## Architecture decision
@@ -406,6 +406,8 @@ Phase D response-format preference on this worktree branch adds:
 - packaged worktree default: `response.defaultFormat = markdown`
 - additive job metadata: `preferredResponseFormat` and `preferredResponsePath`
 - `/oracle-read` and `oracle_read` preview the resolved preferred artifact when it exists
+- optional `storage.jobsDir` config can persist oracle jobs inside a project-local directory when the user opts in
+- precedence for job storage path: `PI_ORACLE_JOBS_DIR` env → resolved `storage.jobsDir` config → `/tmp` default
 
 Fallback semantics:
 

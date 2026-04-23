@@ -11,11 +11,10 @@ import { delimiter, dirname, join } from "node:path";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
 import type { OracleConfig } from "./config.js";
+import { getEffectiveOracleJobsDir } from "./jobs-dir.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
 
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
-const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
-const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || DEFAULT_ORACLE_JOBS_DIR;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser", "/usr/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
@@ -263,7 +262,7 @@ export async function assertOracleSubmitPrerequisites(config: OracleConfig): Pro
     await assertRequiredLocalDependencyReady(dependency.name, dependency.command);
   }
   await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles");
-  await assertWritableDirectory(ORACLE_JOBS_DIR, "jobs");
+  await assertWritableDirectory(getEffectiveOracleJobsDir(), "jobs");
 }
 
 export function getSeedGeneration(config: OracleConfig): string | undefined {
@@ -284,7 +283,7 @@ export async function writeSeedGeneration(config: OracleConfig, value = new Date
 }
 
 function activeJobExists(jobId: string): boolean {
-  const path = join(ORACLE_JOBS_DIR, `oracle-${jobId}`, "job.json");
+  const path = join(getEffectiveOracleJobsDir(), `oracle-${jobId}`, "job.json");
   if (!existsSync(path)) return false;
   try {
     const job = JSON.parse(readFileSync(path, "utf8")) as {

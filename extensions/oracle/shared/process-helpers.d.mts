@@ -17,4 +17,8 @@ export declare function terminateTrackedProcess(
   startedAt?: string,
   options?: OracleTrackedProcessOptions,
 ): Promise<boolean>;
-export declare function spawnDetachedNodeProcess(scriptPath: string, args?: string[]): Promise<OracleDetachedProcessHandle>;
+export declare function spawnDetachedNodeProcess(
+  scriptPath: string,
+  args?: string[],
+  options?: { env?: NodeJS.ProcessEnv },
+): Promise<OracleDetachedProcessHandle>;
