@@ -1305,6 +1305,51 @@ async function testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncesto
   }
 }
 
+async function testWorkspaceRootDoesNotWidenToAncestorWeakPiGitRoot(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-workspace-root-weak-ancestor-${randomUUID()}-`));
+  const outerGitRoot = join(fixtureDir, "outer-git");
+  const plainCwd = join(outerGitRoot, "scratch", "nested");
+
+  try {
+    await mkdir(join(outerGitRoot, ".git"), { recursive: true, mode: 0o700 });
+    await mkdir(join(outerGitRoot, ".pi"), { recursive: true, mode: 0o700 });
+    await mkdir(plainCwd, { recursive: true, mode: 0o700 });
+
+    assert(getProjectId(plainCwd) === plainCwd, "workspace-root detection should not widen a plain folder to an ancestor git root that only carries a weak .pi marker");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testGlobalRelativeJobsDirUsesPlainCwdWhenAncestorWeakPiGitRootWouldSwallow(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-global-jobs-dir-weak-ancestor-${randomUUID()}-`));
+  const outerGitRoot = join(fixtureDir, "outer-git");
+  const plainCwd = join(outerGitRoot, "scratch", "nested");
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    await mkdir(join(outerGitRoot, ".git"), { recursive: true, mode: 0o700 });
+    await mkdir(join(outerGitRoot, ".pi"), { recursive: true, mode: 0o700 });
+    await mkdir(plainCwd, { recursive: true, mode: 0o700 });
+    await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({ storage: { jobsDir: ".oracle/jobs" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const configLoad = getOracleConfigLoadDetails(plainCwd);
+    assert(configLoad.projectConfigPath === join(plainCwd, ".pi", "extensions", "oracle.json"), "global config resolution should not widen the project config path to an ancestor git root that only carries a weak .pi marker");
+
+    const config = loadOracleConfig(plainCwd);
+    assert(config.storage.jobsDir === join(plainCwd, ".oracle", "jobs"), "global relative storage.jobsDir should resolve against the plain cwd when an ancestor git root only carries a weak .pi marker");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-submit-workspace-root-${randomUUID()}-`));
@@ -3248,6 +3293,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
   assert(runtimeSource.includes("resolveWorkspaceRoot"), "runtime should derive project identity from a stable workspace root instead of the raw current working directory");
   assert(runtimeSource.includes('"AGENTS.md"'), "runtime workspace-root detection should recognize project markers like AGENTS.md before widening to unrelated ancestor git roots");
+  assert(runtimeSource.includes('"package.json"'), "runtime workspace-root detection should treat package.json as a strong project marker before widening to ambient ancestor git roots");
+  assert(runtimeSource.includes('const WEAK_WORKSPACE_ROOT_MARKERS = [".pi"] as const;'), "runtime workspace-root detection should treat bare .pi as a weaker marker than explicit project markers or repo roots");
   assert(runtimeSource.includes("Configured oracle browser executable does not exist"), "runtime submit preflight should surface missing configured browser executables clearly");
   assert(runtimeSource.includes("Oracle prerequisite not found on PATH"), "runtime submit preflight should surface missing local dependencies clearly");
   assert(runtimeSource.includes('await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles")'), "runtime submit preflight should validate runtime profile directory writability before submit");
@@ -5099,6 +5146,8 @@ async function main() {
   await testOracleSubmitPreflightRejectsKnownAuthSeedFailures();
   await testWorkspaceRootProjectIdentityCoversSubdirectories(config);
   await testWorkspaceRootFallsBackToProjectMarkersWithoutGit();
+  await testWorkspaceRootDoesNotWidenToAncestorWeakPiGitRoot();
+  await testGlobalRelativeJobsDirUsesPlainCwdWhenAncestorWeakPiGitRootWouldSwallow();
   await testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config);
   await testOracleStatusListsRecentJobIdsWhenNoExplicitId(config);
   await testOracleCancelCommandRequiresExplicitJobId(config);

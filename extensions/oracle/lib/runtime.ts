@@ -20,11 +20,12 @@ const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/ag
 ) || "agent-browser";
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const ORACLE_SUBPROCESS_KILL_GRACE_MS = 2_000;
-const WORKSPACE_ROOT_MARKERS = [
+const STRONG_WORKSPACE_ROOT_MARKERS = [
   ".pi/extensions/oracle.json",
-  ".pi",
   "AGENTS.md",
+  "package.json",
 ] as const;
+const WEAK_WORKSPACE_ROOT_MARKERS = [".pi"] as const;
 const REQUIRED_ORACLE_DEPENDENCIES = [
   { name: "agent-browser", command: AGENT_BROWSER_BIN },
   { name: "tar", command: "tar" },
@@ -68,18 +69,40 @@ function resolveRealCwd(cwd: string): string {
   }
 }
 
-function hasWorkspaceRootMarker(path: string): boolean {
-  return WORKSPACE_ROOT_MARKERS.some((marker) => existsSync(join(path, marker)));
+function hasStrongWorkspaceRootMarker(path: string): boolean {
+  return STRONG_WORKSPACE_ROOT_MARKERS.some((marker) => existsSync(join(path, marker)));
+}
+
+function hasWeakWorkspaceRootMarker(path: string): boolean {
+  return WEAK_WORKSPACE_ROOT_MARKERS.some((marker) => existsSync(join(path, marker)));
 }
 
 function resolveWorkspaceRoot(realCwd: string): string {
   let current = realCwd;
-  let nearestMarkerRoot: string | undefined;
+  let nearestStrongMarkerRoot: string | undefined;
+  let nearestWeakMarkerRoot: string | undefined;
   while (true) {
-    if (!nearestMarkerRoot && hasWorkspaceRootMarker(current)) nearestMarkerRoot = current;
-    if (existsSync(join(current, ".git"))) return nearestMarkerRoot ?? current;
+    const hasGitRoot = existsSync(join(current, ".git"));
+    const hasStrongMarker = hasStrongWorkspaceRootMarker(current);
+    const hasWeakMarker = hasWeakWorkspaceRootMarker(current);
+
+    if (hasGitRoot) {
+      if (hasStrongMarker) return current;
+      if (nearestStrongMarkerRoot) return nearestStrongMarkerRoot;
+      if (nearestWeakMarkerRoot) return nearestWeakMarkerRoot;
+      if (hasWeakMarker && current !== realCwd) {
+        const parent = dirname(current);
+        if (parent === current) return realCwd;
+        current = parent;
+        continue;
+      }
+      return current;
+    }
+
+    if (!nearestStrongMarkerRoot && hasStrongMarker) nearestStrongMarkerRoot = current;
+    if (!nearestWeakMarkerRoot && hasWeakMarker) nearestWeakMarkerRoot = current;
     const parent = dirname(current);
-    if (parent === current) return nearestMarkerRoot ?? realCwd;
+    if (parent === current) return nearestStrongMarkerRoot ?? nearestWeakMarkerRoot ?? realCwd;
     current = parent;
   }
 }
