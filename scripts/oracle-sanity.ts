@@ -118,7 +118,7 @@ import {
   tryAcquireConversationLease,
   tryAcquireRuntimeLease,
 } from "../extensions/oracle/lib/runtime.ts";
-import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, mergeArchiveEntryGroupsForTesting, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
+import { buildOracleToolErrorDetailsForTesting, createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, mergeArchiveEntryGroupsForTesting, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 import { runPollerSanitySuite } from "./oracle-sanity-poller-suite.ts";
@@ -1758,6 +1758,32 @@ async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
       isError: false,
     }, ctx);
     assert(asRecord(invalidPresetPatch)?.isError === true, "oracle tool_result hook should preserve isError for structured oracle tool errors");
+
+    const authMissingError = buildOracleToolErrorDetailsForTesting(
+      "oracle_submit",
+      new Error("Oracle auth seed profile not found: /tmp/oracle-auth-seed-profile. Run /oracle-auth first."),
+      { prompt: "sanity", files: ["README.md"], preset: "instant" },
+    );
+    assert(authMissingError.code === "auth_seed_profile_missing", "oracle submit should classify missing auth seed profiles with auth_seed_profile_missing");
+    assert(authMissingError.rejectedValue === "/tmp/oracle-auth-seed-profile", "auth_seed_profile_missing should report the rejected auth seed path");
+    assert(typeof authMissingError.suggestedNextStep === "string" && authMissingError.suggestedNextStep.includes("oracle_auth"), "auth_seed_profile_missing should include an oracle_auth retry hint");
+
+    const jobsDirUnwritableError = buildOracleToolErrorDetailsForTesting(
+      "oracle_submit",
+      new Error("Oracle jobs directory is not writable: /tmp/blocked-jobs. Fix its permissions or configure a writable path, then retry."),
+      { prompt: "sanity", files: ["README.md"], preset: "instant" },
+    );
+    assert(jobsDirUnwritableError.code === "jobs_dir_unwritable", "oracle submit should classify unwritable jobs dirs with jobs_dir_unwritable");
+    assert(jobsDirUnwritableError.rejectedValue === "/tmp/blocked-jobs", "jobs_dir_unwritable should report the rejected jobs directory path");
+    assert(typeof jobsDirUnwritableError.suggestedNextStep === "string" && jobsDirUnwritableError.suggestedNextStep.includes("storage.jobsDir"), "jobs_dir_unwritable should suggest storage.jobsDir as a remediation path");
+
+    const archiveTooLargeError = buildOracleToolErrorDetailsForTesting(
+      "oracle_submit",
+      new Error("Oracle archive exceeds ChatGPT upload limit (250.00 MiB) after default exclusions. The local archive measured 260.00 MiB (272629760 bytes), so submission stopped before dispatch."),
+      { prompt: "sanity", files: ["README.md"], preset: "instant" },
+    );
+    assert(archiveTooLargeError.code === "archive_too_large", "oracle submit should classify oversize local archives with archive_too_large");
+    assert(typeof archiveTooLargeError.suggestedNextStep === "string" && archiveTooLargeError.suggestedNextStep.includes("Retry automatically"), "archive_too_large should include automatic retry guidance");
 
     const blankArchiveResult = await (submitTool.execute!(
       "oracle-submit-blank-archive-test",

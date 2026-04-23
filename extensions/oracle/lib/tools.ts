@@ -943,6 +943,10 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
   };
 }
 
+export function buildOracleToolErrorDetailsForTesting(toolName: OracleToolErrorSource, error: unknown, params: Record<string, unknown>): OracleToolErrorDetails {
+  return buildOracleToolErrorDetails(toolName, error, params);
+}
+
 function buildOracleToolErrorResult(
   toolName: OracleToolName,
   error: unknown,
