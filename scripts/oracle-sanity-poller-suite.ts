@@ -667,6 +667,86 @@ async function testPollerDoesNotStealNotificationFromLiveSessionTarget(config: O
   }
 }
 
+async function testStoppingPollerCancelsInFlightStaleContextAccess(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const sessionManager = createPersistedSessionManager("poller-stale-context-stop");
+  const sessionFile = sessionManager.getSessionFile();
+  assert(sessionFile, "stale-context poller test should persist a session file");
+  const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
+
+  const ui = createUiStub();
+  const pi = createPiHarness();
+  const sent: SentMessageLike[] = [];
+  pi.sendMessage = (message) => {
+    sent.push(message);
+  };
+  let stale = false;
+  let staleAccesses = 0;
+  const throwIfStale = () => {
+    if (!stale) return;
+    staleAccesses += 1;
+    throw new Error("stale test context was accessed after poller stop");
+  };
+  const ctx = {
+    get cwd() {
+      throwIfStale();
+      return process.cwd();
+    },
+    get sessionManager() {
+      throwIfStale();
+      return sessionManager;
+    },
+    get hasUI() {
+      throwIfStale();
+      return true;
+    },
+    get ui() {
+      throwIfStale();
+      return ui;
+    },
+  } as unknown as ExtensionContext;
+
+  let releaseScan: () => void = () => undefined;
+  let notificationPersistStarted = false;
+  const scanGate = new Promise<void>((resolve) => {
+    releaseScan = resolve;
+  });
+  let unhandled = 0;
+  const onUnhandled = () => {
+    unhandled += 1;
+  };
+
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    startPoller(pi as unknown as ExtensionAPI, ctx, 60_000, "/tmp/fake-oracle-worker.mjs", {
+      hooks: {
+        beforeNotificationPersist: async (claimed) => {
+          if (claimed.id !== jobId) return;
+          notificationPersistStarted = true;
+          await scanGate;
+        },
+      },
+    });
+    await waitForCondition(() => (notificationPersistStarted ? true : undefined), { timeoutMs: 1_500, description: "in-flight poller notification hook" });
+
+    stale = true;
+    stopPollerForSession(sessionFile, process.cwd());
+    releaseScan();
+    await waitForAllPollersToQuiesce();
+    await sleep(25);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    stale = false;
+    stopPollerForSession(sessionFile, process.cwd());
+  }
+
+  assert(staleAccesses === 0, `stopped in-flight poller should not touch stale extension context, saw ${staleAccesses} access(es)`);
+  assert(unhandled === 0, `stopped in-flight poller should not create unhandled rejections, saw ${unhandled}`);
+  assert(sent.length === 0, `stopped in-flight poller should not emit wake-up messages, saw ${sent.length}`);
+  assert((readJob(jobId)?.wakeupAttemptCount ?? 0) === 0, "stopped in-flight poller should not record unsent wake-up attempts");
+  await cleanupJob(jobId);
+}
+
 async function testFreshWakeupTargetLeasePublishIsAtomic(): Promise<void> {
   await resetOracleStateDir();
   const wakeupTargetLeaseKey = `fresh-wakeup-target-${randomUUID()}`;
@@ -1303,6 +1383,7 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testNotificationMessagePreservesSessionModel(config);
   await testPollerNotificationAdoptsOrphanedSessionJobs(config);
   await testPollerDoesNotStealNotificationFromLiveSessionTarget(config);
+  await testStoppingPollerCancelsInFlightStaleContextAccess(config);
   await testFreshWakeupTargetLeasePublishIsAtomic();
   await testWakeupTargetLeaseRenewalStaysVisibleToAdopters(config);
   await testPollerDoesNotStealNotificationWhenOriginBecomesLiveAfterClaim(config);
