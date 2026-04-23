@@ -3088,6 +3088,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
   const sharedObservabilityTypesSource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.d.mts", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
+  const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
   const supportSource = await readFile(new URL("./oracle-sanity-support.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const followUpPromptSource = await readFile(new URL("../prompts/oracle-followup.md", import.meta.url), "utf8");
@@ -3421,6 +3422,10 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes('setConfiguredOracleJobsDir(resolveConfiguredOracleJobsDir(projectCwd, config));'), "oracle submit should sync configured jobs dir from config before worker launch");
   assert(jobsSource.includes('[ORACLE_JOBS_DIR_ENV]: getOracleJobsDir(),'), "worker spawn should pass the effective jobs dir through PI_ORACLE_JOBS_DIR");
   assert(toolsSource.includes('storage.jobsDir in oracle config'), "jobs-dir unwritable guidance should mention the new storage.jobsDir config option");
+  assert(jobsSource.includes('spawnDetachedNodeProcess(workerPath, [jobId, nonce, getOracleJobsDir()], {'), "worker spawn should pass the effective jobs dir as an explicit worker argv fallback");
+  assert(workerSource.includes('const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || process.argv[4]?.trim() || DEFAULT_ORACLE_JOBS_DIR;'), "worker should accept jobs-dir handoff via argv fallback when env propagation is lost");
+  assert(workerSource.includes('spawnDetachedNodeProcess(WORKER_SCRIPT_PATH, [targetJobId, workerNonce, ORACLE_JOBS_DIR], {'), "queued promotion worker spawn should pass the current jobs dir as an explicit argv fallback");
+  assert(workerSource.includes('PI_ORACLE_JOBS_DIR: ORACLE_JOBS_DIR,'), "queued promotion worker spawn should preserve PI_ORACLE_JOBS_DIR in detached child env");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
   assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
   assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");

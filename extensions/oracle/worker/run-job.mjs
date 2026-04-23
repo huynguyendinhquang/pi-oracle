@@ -43,7 +43,7 @@ if (!jobId) {
 }
 
 const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
-const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || DEFAULT_ORACLE_JOBS_DIR;
+const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || process.argv[4]?.trim() || DEFAULT_ORACLE_JOBS_DIR;
 const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
@@ -445,10 +445,16 @@ async function tryAcquireConversationLeaseForJob(job, createdAt) {
 }
 
 async function spawnDetachedWorker(targetJobId) {
-  const child = await spawnDetachedNodeProcess(WORKER_SCRIPT_PATH, [targetJobId]);
+  const workerNonce = randomUUID();
+  const child = await spawnDetachedNodeProcess(WORKER_SCRIPT_PATH, [targetJobId, workerNonce, ORACLE_JOBS_DIR], {
+    env: {
+      ...process.env,
+      PI_ORACLE_JOBS_DIR: ORACLE_JOBS_DIR,
+    },
+  });
   return {
     pid: child.pid,
-    workerNonce: randomUUID(),
+    workerNonce,
     workerStartedAt: child.startedAt,
   };
 }

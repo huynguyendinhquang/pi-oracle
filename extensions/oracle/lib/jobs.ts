@@ -1021,7 +1021,7 @@ export async function spawnWorker(
   jobId: string,
 ): Promise<{ pid: number | undefined; nonce: string; startedAt: string | undefined }> {
   const nonce = randomUUID();
-  const child = await spawnDetachedNodeProcess(workerPath, [jobId, nonce], {
+  const child = await spawnDetachedNodeProcess(workerPath, [jobId, nonce, getOracleJobsDir()], {
     env: {
       ...process.env,
       [ORACLE_JOBS_DIR_ENV]: getOracleJobsDir(),
