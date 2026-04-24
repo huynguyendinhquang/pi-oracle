@@ -27,7 +27,24 @@ import {
 import { promoteQueuedJobs } from "./queue.js";
 import { getProjectId, getSessionId } from "./runtime.js";
 
-const activePollers = new Map<string, NodeJS.Timeout>();
+interface OraclePollerContextSnapshot {
+  cwd: string;
+  sessionFile: string | undefined;
+  hasUI: boolean;
+  ui: ExtensionContext["ui"];
+}
+
+interface OracleActivePoller {
+  active: boolean;
+  sessionKey: string;
+  timer?: NodeJS.Timeout;
+}
+
+interface OraclePollerLifecycle {
+  isActive?: () => boolean;
+}
+
+const activePollers = new Map<string, OracleActivePoller>();
 const scansInFlight = new Set<string>();
 const POLLER_LOCK_TIMEOUT_MS = 50;
 const WAKEUP_TARGET_LEASE_KIND = "wakeup-target";
@@ -122,13 +139,21 @@ function jobCanNotifyContext(
   return job.projectId === getProjectId(cwd) && !jobHasLiveWakeupTarget(job, liveWakeupTargets);
 }
 
-function getJobCounts(ctx: ExtensionContext): { active: number; queued: number } {
-  const currentSessionFile = getSessionFile(ctx);
-  if (!currentSessionFile) return { active: 0, queued: 0 };
+function snapshotPollerContext(ctx: ExtensionContext): OraclePollerContextSnapshot {
+  return {
+    cwd: ctx.cwd,
+    sessionFile: getSessionFile(ctx),
+    hasUI: ctx.hasUI,
+    ui: ctx.ui,
+  };
+}
+
+function getJobCountsForSession(sessionFile: string | undefined, cwd: string): { active: number; queued: number } {
+  if (!sessionFile) return { active: 0, queued: 0 };
   return listOracleJobDirs()
     .map((jobDir) => readJob(jobDir))
     .filter((job): job is NonNullable<typeof job> => Boolean(job))
-    .filter((job) => jobMatchesContext(job, currentSessionFile, ctx.cwd))
+    .filter((job) => jobMatchesContext(job, sessionFile, cwd))
     .reduce(
       (counts, job) => {
         if (job.status === "queued") counts.queued += 1;
@@ -139,15 +164,19 @@ function getJobCounts(ctx: ExtensionContext): { active: number; queued: number }
     );
 }
 
-export function refreshOracleStatus(ctx: ExtensionContext): void {
-  if (!getSessionFile(ctx)) {
-    ctx.ui.setStatus("oracle", ctx.ui.theme.fg("accent", "oracle: unavailable"));
+function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): void {
+  if (!snapshot.sessionFile) {
+    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("accent", "oracle: unavailable"));
     return;
   }
-  const counts = getJobCounts(ctx);
+  const counts = getJobCountsForSession(snapshot.sessionFile, snapshot.cwd);
   const statusText = buildOracleStatusText(counts);
   const tone = counts.active > 0 ? "success" : "accent";
-  ctx.ui.setStatus("oracle", ctx.ui.theme.fg(tone, statusText));
+  snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg(tone, statusText));
+}
+
+export function refreshOracleStatus(ctx: ExtensionContext): void {
+  refreshOracleStatusSnapshot(snapshotPollerContext(ctx));
 }
 
 function requestWakeupTurn(pi: ExtensionAPI, job: OraclePollerJob): void {
@@ -166,13 +195,28 @@ function requestWakeupTurn(pi: ExtensionAPI, job: OraclePollerJob): void {
   );
 }
 
-async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string, options: OraclePollerOptions = {}): Promise<void> {
+async function releaseWakeupLeaseIfInactive(leaseKey: string, lifecycle: OraclePollerLifecycle): Promise<boolean> {
+  if (lifecycle.isActive?.() === false) {
+    await releaseLease(WAKEUP_TARGET_LEASE_KIND, leaseKey).catch(() => undefined);
+    return true;
+  }
+  return false;
+}
+
+async function scan(
+  pi: ExtensionAPI,
+  snapshot: OraclePollerContextSnapshot,
+  workerPath: string,
+  options: OraclePollerOptions = {},
+  lifecycle: OraclePollerLifecycle = {},
+): Promise<void> {
+  if (lifecycle.isActive?.() === false) return;
   const hooks = options.hooks ?? {};
-  const currentSessionFile = getSessionFile(ctx);
-  const pollerKey = getPollerSessionKey(currentSessionFile, ctx.cwd);
+  const currentSessionFile = snapshot.sessionFile;
+  const pollerKey = getPollerSessionKey(currentSessionFile, snapshot.cwd);
   const notificationClaimant = `${pollerKey}:${process.pid}`;
 
-  const projectId = getProjectId(ctx.cwd);
+  const projectId = getProjectId(snapshot.cwd);
   const sessionId = getSessionId(currentSessionFile, projectId);
   const processStartedAt = readProcessStartedAt(process.pid);
   const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(pollerKey, process.pid, processStartedAt || "unknown");
@@ -186,11 +230,14 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
     processStartedAt,
     updatedAt: new Date().toISOString(),
   }).catch(() => undefined);
+  if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
+
   const liveWakeupTargets = await resolveLiveWakeupTargets();
+  if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
   try {
     await withGlobalReconcileLock(
-      { processPid: process.pid, cwd: ctx.cwd, sessionFile: currentSessionFile, source: "poller" },
+      { processPid: process.pid, cwd: snapshot.cwd, sessionFile: currentSessionFile, source: "poller" },
       async () => {
         await reconcileStaleOracleJobs();
       },
@@ -199,12 +246,14 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
   } catch (error) {
     if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
   }
+  if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
   try {
     await promoteQueuedJobsFn({ workerPath, source: "poller" });
   } catch (error) {
     if (!isLockTimeoutError(error, "admission", "global")) throw error;
   }
+  if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
   const terminalJobs = listOracleJobDirs()
     .map((jobDir) => readJob(jobDir))
@@ -214,7 +263,7 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
   const now = Date.now();
   const candidateJobIds = terminalJobs
     .filter((job) => {
-      if (!jobCanNotifyContext(job, currentSessionFile, ctx.cwd, liveWakeupTargets)) return false;
+      if (!jobCanNotifyContext(job, currentSessionFile, snapshot.cwd, liveWakeupTargets)) return false;
       if (job.notifiedAt) return false;
       if (shouldPruneTerminalJob(job, now)) return false;
       return shouldRequestWakeup(job, now);
@@ -222,27 +271,53 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
     .map((job) => job.id);
 
   for (const jobId of candidateJobIds) {
+    if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
     await hooks.beforeNotificationClaim?.(jobId);
+    if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
     const claimed = await tryClaimNotification(jobId, notificationClaimant);
     if (!claimed) continue;
 
-    await hooks.afterNotificationClaim?.(claimed);
-    const preNotifyLiveWakeupTargets = await resolveLiveWakeupTargets();
-    if (!jobCanNotifyContext(claimed, currentSessionFile, ctx.cwd, preNotifyLiveWakeupTargets)) {
-      await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
-      continue;
-    }
-
     try {
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
+      await hooks.afterNotificationClaim?.(claimed);
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
+      const preNotifyLiveWakeupTargets = await resolveLiveWakeupTargets();
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
+      if (!jobCanNotifyContext(claimed, currentSessionFile, snapshot.cwd, preNotifyLiveWakeupTargets)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        continue;
+      }
+
       if (currentSessionFile) {
         await recordNotificationTarget(jobId, notificationClaimant, {
           notificationSessionKey: pollerKey,
           notificationSessionFile: currentSessionFile,
         });
       }
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
       await hooks.beforeNotificationPersist?.(claimed);
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
       const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();
-      if (!jobCanNotifyContext(claimed, currentSessionFile, ctx.cwd, preWakeupLiveWakeupTargets)) {
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
+      if (!jobCanNotifyContext(claimed, currentSessionFile, snapshot.cwd, preWakeupLiveWakeupTargets)) {
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         continue;
       }
@@ -252,16 +327,22 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
         continue;
       }
 
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
+      requestWakeupTurn(pi, deliverable);
       const notedWakeup = await noteWakeupRequested(jobId);
-      const deliverableAfterNote = notedWakeup ?? readJob(jobId);
-      if (!deliverableAfterNote || shouldPruneTerminalJob(deliverableAfterNote, Date.now())) {
+      if (!notedWakeup) {
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         continue;
       }
-
-      requestWakeupTurn(pi, deliverableAfterNote);
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Oracle job ${claimed.id} is ${claimed.status}.`, "info");
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        return;
+      }
+      if (snapshot.hasUI) {
+        snapshot.ui.notify(`Oracle job ${claimed.id} is ${claimed.status}.`, "info");
       }
       await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
     } catch (error) {
@@ -272,40 +353,58 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
 }
 
 export async function scanOracleJobsOnce(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string, options: OraclePollerOptions = {}): Promise<void> {
-  await scan(pi, ctx, workerPath, options);
+  await scan(pi, snapshotPollerContext(ctx), workerPath, options);
 }
 
 export function startPoller(pi: ExtensionAPI, ctx: ExtensionContext, intervalMs: number, workerPath: string, options: OraclePollerOptions = {}): void {
-  const sessionKey = getPollerSessionKey(getSessionFile(ctx), ctx.cwd);
+  const snapshot = snapshotPollerContext(ctx);
+  const sessionKey = getPollerSessionKey(snapshot.sessionFile, snapshot.cwd);
   const existing = activePollers.get(sessionKey);
-  if (existing) clearInterval(existing);
+  if (existing) {
+    existing.active = false;
+    if (existing.timer) clearInterval(existing.timer);
+  }
+
+  const handle: OracleActivePoller = {
+    active: true,
+    sessionKey,
+  };
+  activePollers.set(sessionKey, handle);
+
+  const isCurrentPollerActive = () => handle.active && activePollers.get(sessionKey) === handle;
 
   const runScan = async () => {
+    if (!isCurrentPollerActive()) return;
     if (scansInFlight.has(sessionKey)) return;
     scansInFlight.add(sessionKey);
     try {
-      await scanOracleJobsOnce(pi, ctx, workerPath, options);
+      await scan(pi, snapshot, workerPath, options, { isActive: isCurrentPollerActive });
     } catch (error) {
-      console.error(`Oracle poller scan failed (${sessionKey}):`, error);
+      if (isCurrentPollerActive()) {
+        console.error(`Oracle poller scan failed (${sessionKey}):`, error);
+      }
     } finally {
       scansInFlight.delete(sessionKey);
-      refreshOracleStatus(ctx);
+      if (isCurrentPollerActive()) {
+        refreshOracleStatusSnapshot(snapshot);
+      }
     }
   };
 
-  refreshOracleStatus(ctx);
+  refreshOracleStatusSnapshot(snapshot);
   void runScan();
   const timer = setInterval(() => {
     void runScan();
   }, intervalMs);
-  activePollers.set(sessionKey, timer);
+  handle.timer = timer;
 }
 
 export function stopPollerForSession(sessionFile: string | undefined, cwd: string): void {
   const sessionKey = getPollerSessionKey(sessionFile, cwd);
-  const timer = activePollers.get(sessionKey);
-  if (timer) {
-    clearInterval(timer);
+  const handle = activePollers.get(sessionKey);
+  if (handle) {
+    handle.active = false;
+    if (handle.timer) clearInterval(handle.timer);
     activePollers.delete(sessionKey);
   }
   const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(sessionKey);
@@ -313,13 +412,14 @@ export function stopPollerForSession(sessionFile: string | undefined, cwd: strin
 }
 
 export async function stopAllPollers(): Promise<void> {
-  const sessionKeys = [...activePollers.keys()];
-  for (const timer of activePollers.values()) {
-    clearInterval(timer);
+  const handles = [...activePollers.values()];
+  for (const handle of handles) {
+    handle.active = false;
+    if (handle.timer) clearInterval(handle.timer);
   }
   activePollers.clear();
-  await Promise.all(sessionKeys.map(async (sessionKey) => {
-    const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(sessionKey);
+  await Promise.all(handles.map(async (handle) => {
+    const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(handle.sessionKey);
     await releaseLease(WAKEUP_TARGET_LEASE_KIND, wakeupTargetLeaseKey).catch(() => undefined);
   }));
 }

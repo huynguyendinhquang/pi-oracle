@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.6.6",
+  "version": "0.6.10",
   "description": "ChatGPT web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
@@ -42,7 +42,7 @@
     ]
   },
   "scripts": {
-    "check:oracle-extension": "node --check extensions/oracle/shared/process-helpers.mjs && node --check extensions/oracle/shared/state-coordination-helpers.mjs && node --check extensions/oracle/shared/job-coordination-helpers.mjs && node --check extensions/oracle/shared/job-lifecycle-helpers.mjs && node --check extensions/oracle/shared/job-observability-helpers.mjs && node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/chatgpt-flow-helpers.mjs && node --check extensions/oracle/worker/auth-flow-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-ai --external:@sinclair/typebox --outfile=/tmp/pi-oracle-extension-check.js",
+    "check:oracle-extension": "node --check extensions/oracle/shared/process-helpers.mjs && node --check extensions/oracle/shared/state-coordination-helpers.mjs && node --check extensions/oracle/shared/job-coordination-helpers.mjs && node --check extensions/oracle/shared/job-lifecycle-helpers.mjs && node --check extensions/oracle/shared/job-observability-helpers.mjs && node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/chatgpt-flow-helpers.mjs && node --check extensions/oracle/worker/auth-flow-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-ai --external:typebox --outfile=/tmp/pi-oracle-extension-check.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:worker-helpers": "tsc --noEmit -p tsconfig.worker-helpers.json",
     "sanity:oracle": "node scripts/oracle-sanity-runner.mjs",
@@ -55,19 +55,19 @@
     "@steipete/sweet-cookie": "^0.2.0"
   },
   "peerDependencies": {
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "overrides": {
-    "basic-ftp": "^5.2.2"
+    "basic-ftp": "5.3.0",
+    "protobufjs": "7.5.5"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.67.4",
-    "@mariozechner/pi-coding-agent": "^0.67.4",
-    "@sinclair/typebox": "^0.34.49",
+    "@mariozechner/pi-coding-agent": "^0.70.0",
     "@types/node": "^25.6.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typebox": "^1.1.33",
+    "typescript": "^6.0.3"
   },
   "engines": {
     "node": ">=22"

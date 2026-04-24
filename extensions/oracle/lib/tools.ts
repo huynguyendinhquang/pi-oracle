@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
 import { runOracleAuthBootstrap } from "./auth.js";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
 import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
