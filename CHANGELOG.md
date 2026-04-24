@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+## 0.6.10 - 2026-04-23
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-coding-agent` `0.70.0`
+- regenerated the npm lockfile against the current stable dependency graph
+
+### Compatibility
+- reviewed the pi `0.70.0` changelog and confirmed the oracle extension does not depend on the changed terminal progress defaults or the new `--no-builtin-tools` behavior
+
+## 0.6.9 - 2026-04-23
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-ai` / `@mariozechner/pi-coding-agent` `0.69.0`
+- migrated published TypeBox integration metadata and source imports from `@sinclair/typebox` to `typebox` for pi `0.69.0` compatibility
+- updated the local oracle verification flow to externalize `typebox` in the extension bundle check and regenerated the npm lockfile against the current stable dependency graph
+
+### Fixed
+- stopped background poller scans from touching stale pi extension contexts after session replacement or reload
+- avoided consuming wake-up retry attempts when a stopped poller exits before sending its best-effort reminder
+
+### Compatibility
+- reviewed the pi `0.69.0` changelog and confirmed the extension already uses explicit session-scoped objects in the relevant flows while now matching the required TypeBox 1.x package name
+
+
+## 0.6.8 - 2026-04-21
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-ai` / `@mariozechner/pi-coding-agent` `0.68.0`
+- regenerated the npm lockfile against the current stable dependency graph
+
+### Compatibility
+- reviewed the pi `0.68.0` changelog and confirmed the extension already uses explicit session cwd values instead of relying on removed ambient cwd fallbacks in public helpers
+
+## 0.6.7 - 2026-04-18
+
+### Changed
+- bumped the local pi development baseline to `@mariozechner/pi-ai` / `@mariozechner/pi-coding-agent` `0.67.68` and `typescript` `6.0.3`
+- refreshed the release lockfile against the current stable pi patch line
+
+### Fixed
+- pinned the transitive `basic-ftp` dependency to `5.3.0` and `protobufjs` to `7.5.5` to clear the current audit findings without introducing peer conflicts
+- updated the release sanity guard to enforce the patched override versions during future publishes
+
 ## 0.6.6 - 2026-04-16
 
 ### Changed

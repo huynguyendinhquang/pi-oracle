@@ -11,7 +11,7 @@ import { release, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { Check } from "@sinclair/typebox/value";
+import { Check } from "typebox/value";
 import {
   coerceOracleSubmitPresetId,
   DEFAULT_CONFIG,
@@ -3135,7 +3135,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     engines?: { node?: string };
     os?: string[];
     scripts?: { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
-    overrides?: { "basic-ftp"?: string };
+    overrides?: { "basic-ftp"?: string; protobufjs?: string };
   };
   const pi = createPiHarness();
   registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
@@ -3260,9 +3260,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
     assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
   }
-  const preflightSchema = preflightTool.parameters as import("@sinclair/typebox").TSchema;
-  const authSchema = authTool.parameters as import("@sinclair/typebox").TSchema;
-  const submitSchema = submitTool.parameters as import("@sinclair/typebox").TSchema;
+  const preflightSchema = preflightTool.parameters as import("typebox").TSchema;
+  const authSchema = authTool.parameters as import("typebox").TSchema;
+  const submitSchema = submitTool.parameters as import("typebox").TSchema;
   assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
   assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
   assert(Object.keys(preflightProperties ?? {}).length === 0, "oracle_preflight should not require caller arguments");
@@ -3361,12 +3361,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("stopAllPollers"), "poller module should expose a way for the sanity harness to stop all background pollers before isolated-state teardown");
   assert(pollerSource.includes("waitForAllPollersToQuiesce"), "poller module should expose a way for the sanity harness to wait for in-flight scans before teardown");
   assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
-  assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("await noteWakeupRequested(jobId)"), "poller should perform the final live-target recheck before persisting a wake-up attempt");
-  assert(pollerSource.indexOf("await noteWakeupRequested(jobId)") < pollerSource.indexOf("requestWakeupTurn(pi, deliverableAfterNote)"), "poller should durably record a wake-up attempt before the best-effort wake-up send path");
+  assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should perform the final live-target recheck before sending a best-effort wake-up");
   assert(pollerSource.includes("const deliverable = readJob(jobId);"), "poller should re-read the job immediately before send so deleted/pruned jobs cannot emit stale wake-ups");
-  assert(pollerSource.includes("const deliverableAfterNote = notedWakeup ?? readJob(jobId);"), "poller should re-read the job after persisting the wake-up attempt so the send path uses durable state");
-  assert(pollerSource.includes("if (!deliverableAfterNote || shouldPruneTerminalJob(deliverableAfterNote, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable after persisting the wake-up attempt");
-  assert(pollerSource.includes("requestWakeupTurn(pi, deliverableAfterNote)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
+  assert(pollerSource.includes("if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable before send");
+  assert(pollerSource.indexOf("requestWakeupTurn(pi, deliverable)") < pollerSource.indexOf("await noteWakeupRequested(jobId)"), "poller should only record wake-up attempts after the best-effort send path runs");
+  assert(pollerSource.includes("if (!notedWakeup) {"), "poller should tolerate a job disappearing after the best-effort wake-up send path");
+  assert(pollerSource.includes("requestWakeupTurn(pi, deliverable)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent(job"), "poller wake-up turns should include durable response/artifact paths from job state via the shared observability helper");
   assert(pollerSource.includes("responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath))"), "poller wake-up turns should hide missing response paths when no response file was actually written");
   assert(sharedObservabilitySource.includes("Use /oracle-read"), "poller wake-up content should direct receivers to /oracle-read as the primary saved-result path");
@@ -3473,7 +3473,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
-  assert(pkg.overrides?.["basic-ftp"] === "^5.2.2", "package.json should override basic-ftp to a patched version");
+  assert(pkg.overrides?.["basic-ftp"] === "5.3.0", "package.json should override basic-ftp to the latest patched stable version");
+  assert(pkg.overrides?.protobufjs === "7.5.5", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
   assert(commandsSource.includes("recently woken jobs may stay retained briefly"), "oracle-clean help text should mention the short post-send retention grace window");
