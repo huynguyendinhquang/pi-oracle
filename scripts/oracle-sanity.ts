@@ -3512,6 +3512,10 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("preferredResponseFormat: preferredResponse.format,"), "worker should persist preferredResponseFormat on terminal jobs");
   assert(workerSource.includes("preferredResponsePath: preferredResponse.path,"), "worker should persist preferredResponsePath on terminal jobs");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
+  const chatgptSelectorSnapshot = '- button "ChatGPT" [ref=e7] aria-label="Model selector"';
+  const [chatgptSelectorEntry] = parseSnapshotEntries(chatgptSelectorSnapshot);
+  assert(chatgptSelectorEntry?.label === "ChatGPT", "snapshot parser should preserve the visible ChatGPT selector label");
+  assert(chatgptSelectorEntry?.ariaLabel === "Model selector", "snapshot parser should capture aria-label metadata for relabeled ChatGPT controls");
   const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
   assert(
     workerSource.includes('from "./response-format-helpers.mjs"') && workerSource.includes("assistantMessages(job)"),
@@ -3592,6 +3596,9 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('if (probe?.domLoginCta) {'), "worker readiness checks should refuse public login CTA shells instead of proceeding to model selection");
   assert(workerSource.includes("clickModelFamilyControlViaDom"), "worker should have a DOM-driven fallback for model family controls when snapshot matching misses current ChatGPT UI variants");
   assert(workerSource.includes("openModelConfigurationViaDom"), "worker should have a DOM-driven fallback for opening the model configuration UI when ref-click opening misses current ChatGPT UI variants");
+  assert(workerSource.includes('ariaLabel === "Model selector"'), "worker should recognize the relabeled ChatGPT model selector via aria-label metadata");
+  assert(workerSource.includes("const poll = async (predicate, timeoutMs") && workerSource.includes("poll(findConfigure, 2000)") && workerSource.includes("poll(hasConfigurationUi, 3000, 150)"), "worker DOM model-configuration fallback should poll for Configure and modal readiness instead of relying on fixed short sleeps");
+  assert(workerSource.includes('for (let attempt = 1; attempt <= 2; attempt += 1)'), "worker DOM model-configuration fallback should retry Configure once when the modal does not open promptly");
   assert(workerSource.includes("reopenModelConfigurationIfClosed"), "worker should reopen model configuration when ChatGPT closes selector/config surfaces mid-flow");
   assert(workerSource.includes("snapshotFamilySelectionMatches"), "worker should verify instant family selection before toggling auto-switch state");
   assert(workerSource.includes("Model configuration UI closed during"), "worker should log model configuration reopen attempts when ChatGPT collapses the UI");

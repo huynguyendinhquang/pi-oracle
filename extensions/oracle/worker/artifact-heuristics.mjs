@@ -18,12 +18,14 @@ export function parseSnapshotEntries(snapshot) {
       const kindMatch = line.match(/^\s*-\s*([^\s]+)/);
       const quotedMatch = line.match(/"([^"]*)"/);
       const valueMatch = line.match(/:\s*(.+)$/);
+      const ariaLabelMatch = line.match(/\baria-label="([^"]*)"/);
       return {
         line,
         lineIndex,
         ref: `@${refMatch[1]}`,
         kind: kindMatch ? kindMatch[1] : undefined,
         label: quotedMatch ? quotedMatch[1] : undefined,
+        ariaLabel: ariaLabelMatch ? ariaLabelMatch[1] : undefined,
         value: valueMatch ? valueMatch[1].trim() : undefined,
         disabled: /\bdisabled\b/.test(line),
       };

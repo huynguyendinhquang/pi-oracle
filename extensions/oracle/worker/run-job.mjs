@@ -839,9 +839,11 @@ function matchesModelFamilyControl(candidate, family) {
 }
 
 function matchesModelConfigurationOpener(candidate) {
-  if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
+  if (candidate.kind !== "button" || candidate.disabled) return false;
   const label = String(candidate.label || "");
-  return candidate.label === "Model selector"
+  const ariaLabel = String(candidate.ariaLabel || "");
+  return label === "Model selector"
+    || ariaLabel === "Model selector"
     || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label);
@@ -909,22 +911,42 @@ async function openModelConfigurationViaDom(job) {
     const hasConfigurationUi = () => Boolean(
       document.querySelector('[role="dialog"] [role="radio"], [role="dialog"] [role="switch"], [role="dialog"] [role="combobox"]')
     );
-    if (hasConfigurationUi()) return { opened: true, step: "already-open" };
-    const selector = Array.from(document.querySelectorAll('button,[role="button"]')).find((element) =>
+    const findSelector = () => Array.from(document.querySelectorAll('button,[role="button"]')).find((element) =>
       element.getAttribute("aria-label") === "Model selector" ||
       element.getAttribute("data-testid") === "model-switcher-dropdown-button"
     );
-    if (!selector) return { opened: false, step: "missing-selector" };
-    selector.click();
-    await wait(150);
-    if (hasConfigurationUi()) return { opened: true, step: "selector-clicked" };
-    const configure = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], button, [role="button"]')).find(
+    const findConfigure = () => Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], button, [role="button"]')).find(
       (element) => readText(element) === "Configure..."
     );
-    if (!configure) return { opened: false, step: "missing-configure" };
-    configure.click();
-    await wait(250);
-    return { opened: hasConfigurationUi(), step: "configure-clicked" };
+    const poll = async (predicate, timeoutMs, intervalMs = 100) => {
+      const deadline = Date.now() + timeoutMs;
+      let value = predicate();
+      while (!value && Date.now() < deadline) {
+        await wait(intervalMs);
+        value = predicate();
+      }
+      return value;
+    };
+    const openMenu = async () => {
+      const configureAlreadyVisible = findConfigure();
+      if (configureAlreadyVisible) return { opened: true, step: "menu-already-open" };
+      const selector = findSelector();
+      if (!selector) return { opened: false, step: "missing-selector" };
+      selector.click();
+      const configure = await poll(findConfigure, 2000);
+      return configure ? { opened: true, step: "selector-clicked" } : { opened: false, step: "missing-configure" };
+    };
+    if (hasConfigurationUi()) return { opened: true, step: "already-open" };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const menu = await openMenu();
+      if (!menu.opened) return menu;
+      if (hasConfigurationUi()) return { opened: true, step: menu.step };
+      const configure = findConfigure();
+      if (!configure) continue;
+      configure.click();
+      if (await poll(hasConfigurationUi, 3000, 150)) return { opened: true, step: "configure-clicked-" + attempt };
+    }
+    return { opened: hasConfigurationUi(), step: "configure-clicked-timeout" };
   `));
   return result && typeof result === "object" && result.opened === true;
 }

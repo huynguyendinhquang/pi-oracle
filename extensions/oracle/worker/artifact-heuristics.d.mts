@@ -4,6 +4,7 @@ export interface SnapshotEntry {
   ref: string;
   kind?: string;
   label?: string;
+  ariaLabel?: string;
   value?: string;
   disabled: boolean;
 }
