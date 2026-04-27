@@ -3617,6 +3617,10 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("prompt-composer-rate-limit-timeout"), "worker should capture diagnostics when prompt-composer rate limiting persists");
   assert(workerSource.includes("temporary rate-limit page while preparing the prompt composer"), "worker should report prompt-composer rate-limit failures explicitly instead of generic composer lookup errors");
   assert(workerSource.includes("Response rate-limit interstitial dismissed; retrying response harvest"), "worker should dismiss response-phase rate-limit interstitials before waiting or deferring harvest");
+  assert(workerSource.includes("RESPONSE_STALE_STREAMING_TEXT_STABILITY_POLLS"), "worker should tolerate stale Stop streaming chrome when target response text is stable");
+  assert(workerSource.includes("Stop streaming remained visible while target response text stabilized"), "worker should log when it accepts stable response text despite stale Stop streaming chrome");
+  assert(workerSource.includes("hasAccountSwitcherOverlay") && workerSource.includes('button "Log in to another account"'), "worker should detect ChatGPT account switcher/profile overlays during readiness checks");
+  assert(workerSource.includes("dismissAccountSwitcherOverlay") && workerSource.includes("ChatGPT account switcher/profile overlay detected"), "worker should dismiss account switcher/profile overlays before timing out chat readiness");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");

@@ -81,6 +81,8 @@ const TRANSIENT_OUTAGE_RECOVERY_TIMEOUT_MS = 3 * 60_000;
 const TRANSIENT_OUTAGE_RELOAD_INTERVAL_MS = 20_000;
 const RESPONSE_RATE_LIMIT_DEFER_MS = 60_000;
 const RESPONSE_RATE_LIMIT_MAX_DEFER_ATTEMPTS = 3;
+const RESPONSE_STALE_STREAMING_TEXT_STABILITY_POLLS = 3;
+const RESPONSE_STALE_STREAMING_MIN_TEXT_AGE_MS = 15_000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser", "/usr/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
@@ -1006,6 +1008,28 @@ function detectRateLimitSignal(text) {
   return match?.label;
 }
 
+function hasAccountSwitcherOverlay(snapshot) {
+  return snapshot.includes('button "Log in to another account"')
+    || snapshot.includes('button "Create account"')
+    || /button "Profile image [^"]+"/.test(snapshot);
+}
+
+async function dismissAccountSwitcherOverlay(job, snapshot) {
+  if (!hasAccountSwitcherOverlay(snapshot)) return false;
+  await log("ChatGPT account switcher/profile overlay detected; dismissing before readiness check");
+  const closeEntry = findEntry(
+    snapshot,
+    (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.close && !candidate.disabled,
+  );
+  if (closeEntry) {
+    await clickRef(job, closeEntry.ref).catch(() => undefined);
+  } else {
+    await agentBrowser(job, "press", "Escape").catch(() => undefined);
+  }
+  await sleep(1000);
+  return true;
+}
+
 function classifyChatPage({ job, url, snapshot, body, probe }) {
   const text = `${snapshot}\n${body}`;
   const challengePatterns = [
@@ -1111,6 +1135,11 @@ async function waitForOracleReady(job) {
       pageText(job).catch(() => ""),
       loginProbe(job).catch(() => ({ ok: false, status: 0, error: "probe-failed" })),
     ]);
+    if (await dismissAccountSwitcherOverlay(job, snapshot)) {
+      await agentBrowser(job, "reload").catch(() => undefined);
+      await sleep(1500);
+      continue;
+    }
     const classification = classifyChatPage({ job, url, snapshot, body, probe });
     if (classification.state === "authenticated_and_ready") return;
     if (classification.state === "auth_transitioning") {
@@ -1959,6 +1988,9 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   let loggedResponseRateLimit = false;
   let responseRateLimitDeferAttempts = 0;
   let loggedStructuredExtractionFailure = false;
+  let lastStableTargetText = "";
+  let stableTargetTextPolls = 0;
+  let stableTargetTextFirstSeenAt = 0;
 
   while (Date.now() < timeoutAt) {
     await heartbeat();
@@ -1993,6 +2025,20 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       : undefined;
     const responseExtractionMode = structuredResult.ok && !usedPlainTextFallback ? "structured-dom" : "plain-text-fallback";
     const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
+    const normalizedTargetText = targetText.replace(/\s+/g, " ").trim();
+    if (normalizedTargetText) {
+      if (normalizedTargetText === lastStableTargetText) {
+        stableTargetTextPolls += 1;
+      } else {
+        lastStableTargetText = normalizedTargetText;
+        stableTargetTextPolls = 1;
+        stableTargetTextFirstSeenAt = Date.now();
+      }
+    } else {
+      lastStableTargetText = "";
+      stableTargetTextPolls = 0;
+      stableTargetTextFirstSeenAt = 0;
+    }
 
     if (rateLimitSignal) {
       if (!responseRateLimitDeadline) {
@@ -2077,6 +2123,17 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       throw new Error(`ChatGPT response failed: ${responseFailureText}`);
     }
 
+
+    const staleStreamingTextIsStable = hasStopStreaming
+      && normalizedTargetText
+      && stableTargetTextPolls >= RESPONSE_STALE_STREAMING_TEXT_STABILITY_POLLS
+      && Date.now() - stableTargetTextFirstSeenAt >= RESPONSE_STALE_STREAMING_MIN_TEXT_AGE_MS;
+    if (staleStreamingTextIsStable) {
+      await log(
+        `Stop streaming remained visible while target response text stabilized for ${stableTargetTextPolls} polls; accepting stable response text.`,
+      );
+      return { responseIndex: baselineAssistantCount, responseText: targetText, responseExtractionMode, responseStructured };
+    }
     let completionSignature;
     if (!hasStopStreaming && hasTargetCopyResponse && targetText) {
       completionSignature = deriveAssistantCompletionSignature({
