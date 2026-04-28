@@ -1016,7 +1016,16 @@ function hasAccountSwitcherOverlay(snapshot) {
 
 async function dismissAccountSwitcherOverlay(job, snapshot) {
   if (!hasAccountSwitcherOverlay(snapshot)) return false;
-  await log("ChatGPT account switcher/profile overlay detected; dismissing before readiness check");
+  await log("ChatGPT account switcher/profile overlay detected; selecting current account before readiness check");
+  const accountEntry = findEntry(
+    snapshot,
+    (candidate) => candidate.kind === "button" && /^Profile image\b/.test(String(candidate.label || "")) && !candidate.disabled,
+  );
+  if (accountEntry) {
+    await clickRef(job, accountEntry.ref).catch(() => undefined);
+    await sleep(2500);
+    return true;
+  }
   const closeEntry = findEntry(
     snapshot,
     (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.close && !candidate.disabled,
@@ -1026,7 +1035,7 @@ async function dismissAccountSwitcherOverlay(job, snapshot) {
   } else {
     await agentBrowser(job, "press", "Escape").catch(() => undefined);
   }
-  await sleep(1000);
+  await sleep(1500);
   return true;
 }
 
@@ -1136,8 +1145,7 @@ async function waitForOracleReady(job) {
       loginProbe(job).catch(() => ({ ok: false, status: 0, error: "probe-failed" })),
     ]);
     if (await dismissAccountSwitcherOverlay(job, snapshot)) {
-      await agentBrowser(job, "reload").catch(() => undefined);
-      await sleep(1500);
+      timeoutAt = Math.max(timeoutAt, Date.now() + 45_000);
       continue;
     }
     const classification = classifyChatPage({ job, url, snapshot, body, probe });
