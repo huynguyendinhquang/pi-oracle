@@ -115,6 +115,15 @@ function parseComposerChipSelection(label) {
   const normalized = normalizeChipLabel(label).toLowerCase();
   if (!normalized) return undefined;
 
+  // Handle new format: "Thinking• Extended" or "Pro• Standard"
+  const bulletMatch = normalized.match(/^(thinking|pro)\s*•\s*(light|standard|extended|heavy)$/i);
+  if (bulletMatch) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ (bulletMatch[1].toLowerCase()),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ (bulletMatch[2].toLowerCase()),
+    };
+  }
+
   const thinkingMatch = normalized.match(THINKING_CHIP_PATTERN);
   if (thinkingMatch) {
     return {
@@ -156,8 +165,10 @@ function detectSelectedModelFamily(entries) {
     for (const family of /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])) {
       if (matchesModelFamilyLabel(entry.label, family)) return family;
     }
+    // Handle new format: "Thinking• Extended"
+    const bulletMatch = String(entry.label || "").match(/^(Thinking|Pro|Instant)\s*•\s*/i);
+    if (bulletMatch) return bulletMatch[1].toLowerCase();
   }
-
   const hasProEffortCombobox = entries.some(
     (entry) => !entry.disabled && entry.kind === "combobox" && normalizeText(entry.label).toLowerCase() === PRO_THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase(),
   );
@@ -203,6 +214,15 @@ export function effortSelectionVisible(snapshot, effortLabel, family) {
       if (!expectedComboboxLabel) return true;
       return normalizeText(entry.label).toLowerCase() === expectedComboboxLabel;
     }
+    // Handle new format: "Thinking• Extended" or "Pro• Standard"
+    const bulletMatch = (entry.kind === "menuitemradio" || entry.kind === "radio") ? String(entry.label || "").match(/^(Thinking|Pro)\s*•\s*(Light|Standard|Extended|Heavy)$/i) : null;
+    if (bulletMatch) {
+      const matchedEffort = bulletMatch[2].toLowerCase();
+      const matchedFamily = bulletMatch[1].toLowerCase();
+      if (matchedEffort === normalizedEffort) {
+        return !normalizedFamily || matchedFamily === normalizedFamily;
+      }
+    }
     const chipSelection = entry.kind === "button" ? parseComposerChipSelection(entry.label) : undefined;
     if (chipSelection?.effort === normalizedEffort) {
       return !normalizedFamily || chipSelection.modelFamily === normalizedFamily;
@@ -230,9 +250,12 @@ export function thinkingChipVisible(snapshot) {
 export function snapshotHasModelConfigurationUi(snapshot) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
+  const hasOldModelSelectorMenu = entries.some(
+    (entry) => entry.kind === "button" && entry.label === "Model selector" && /\bexpanded=true\b/.test(String(entry.line || "")),
+  );
   const hasFamilyRadios = entries.some(
-    (entry) => entry.kind === "radio" && !entry.disabled && /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])
-      .some((family) => matchesModelFamilyLabel(entry.label, family)),
+    (entry) => (entry.kind === "radio" || (entry.kind === "menuitemradio" && !hasOldModelSelectorMenu)) && !entry.disabled && /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])
+      .some((family) => matchesModelFamilyLabel(entry.label, family) || /^(Instant|Thinking|Pro)\b/i.test(String(entry.label || ""))),
   );
   const hasEffortCombobox = entries.some((entry) => {
     if (entry.kind !== "combobox" || entry.disabled) return false;
@@ -301,21 +324,25 @@ export function snapshotCanSafelySkipModelConfiguration(snapshot, selection) {
 export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
+  const selectedModelFamily = detectSelectedModelFamily(entries);
+  if (selectedModelFamily) {
+    if (selectedModelFamily !== selection.modelFamily) return false;
+
+    if (selection.modelFamily === "thinking" || selection.modelFamily === "pro") {
+      return effortSelectionVisible(snapshot, requestedEffortLabel(selection), selection.modelFamily);
+    }
+
+    if (selection.modelFamily === "instant") {
+      const autoSwitchState = autoSwitchToThinkingSelectionVisible(snapshot);
+      if (selection.autoSwitchToThinking) return autoSwitchState === true;
+      return autoSwitchState !== true;
+    }
+
+    return false;
+  }
+
   const chipSelection = detectComposerChipSelection(entries);
   if (chipSelection) return selectionMatchesChipSelection(selection, chipSelection);
-
-  const selectedModelFamily = detectSelectedModelFamily(entries);
-  if (!selectedModelFamily || selectedModelFamily !== selection.modelFamily) return false;
-
-  if (selection.modelFamily === "thinking" || selection.modelFamily === "pro") {
-    return effortSelectionVisible(snapshot, requestedEffortLabel(selection), selection.modelFamily);
-  }
-
-  if (selection.modelFamily === "instant") {
-    const autoSwitchState = autoSwitchToThinkingSelectionVisible(snapshot);
-    if (selection.autoSwitchToThinking) return autoSwitchState === true;
-    return autoSwitchState !== true;
-  }
 
   return false;
 }
@@ -328,18 +355,22 @@ export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
 export function snapshotWeaklyMatchesRequestedModel(snapshot, selection) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
+  const selectedModelFamily = detectSelectedModelFamily(entries);
+  if (selectedModelFamily) {
+    if (selectedModelFamily !== selection.modelFamily) return false;
+
+    if (selection.modelFamily === "instant") {
+      const autoSwitchState = autoSwitchToThinkingSelectionVisible(snapshot);
+      return selection.autoSwitchToThinking ? autoSwitchState !== false : autoSwitchState !== true;
+    }
+
+    return true;
+  }
+
   const chipSelection = detectComposerChipSelection(entries);
   if (chipSelection) return selectionMatchesChipSelection(selection, chipSelection);
 
-  const selectedModelFamily = detectSelectedModelFamily(entries);
-  if (!selectedModelFamily || selectedModelFamily !== selection.modelFamily) return false;
-
-  if (selection.modelFamily === "instant") {
-    const autoSwitchState = autoSwitchToThinkingSelectionVisible(snapshot);
-    return selection.autoSwitchToThinking ? autoSwitchState !== false : autoSwitchState !== true;
-  }
-
-  return true;
+  return false;
 }
 
 /**

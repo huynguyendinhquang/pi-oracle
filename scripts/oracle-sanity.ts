@@ -4536,6 +4536,20 @@ function testChatGptUiHelpers(): void {
     "top-level family menus should not weakly verify the wrong family just because multiple family labels are visible",
   );
 
+  const topMenuThinkingWithComposerButtonSnapshot = [
+    '- generic "Thinking" [ref=e260] clickable [onclick]',
+    '  - button "Thinking" [expanded=true, ref=e261]',
+    '- menu "Thinking" [ref=e262] clickable [onclick]',
+    '  - menuitemradio "Instant" [checked=false, ref=e263]',
+    '  - menuitemradio "Thinking" [checked=true, ref=e264]',
+    '  - menuitemradio "Pro • Extended" [checked=false, ref=e265]',
+    '  - menuitem "Configure..." [ref=e266]',
+  ].join("\n");
+  assert(
+    snapshotWeaklyMatchesRequestedModel(topMenuThinkingWithComposerButtonSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "open model menus should prefer the checked menu item over the composer model button while verifying family selection",
+  );
+
   const topMenuModelSelectorSnapshot = [
     '- button "Model selector" [expanded=true, ref=e230]',
     '- menuitemradio "Instant" [checked=false, ref=e231]',

@@ -837,7 +837,12 @@ function findLastEntry(snapshot, predicate) {
 }
 
 function matchesModelFamilyControl(candidate, family) {
-  return ["button", "radio", "menuitemradio"].includes(candidate.kind || "") && typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family) && !candidate.disabled;
+  if (candidate.disabled || !["button", "radio", "menuitemradio"].includes(candidate.kind || "")) return false;
+  if (typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family)) return true;
+  // Handle new format: "Thinking• Extended"
+  const bulletMatch = String(candidate.label || "").match(/^(Thinking|Pro|Instant)\s*•\s*/i);
+  if (bulletMatch && bulletMatch[1].toLowerCase() === family) return true;
+  return false;
 }
 
 function matchesModelConfigurationOpener(candidate) {
@@ -848,7 +853,8 @@ function matchesModelConfigurationOpener(candidate) {
     || ariaLabel === "Model selector"
     || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
-    || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label);
+    || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label)
+    || /^(?:Light|Standard|Extended|Heavy)(?:, click to remove)?$/i.test(label);
 }
 
 function composerControlsVisible(snapshot) {
@@ -896,7 +902,7 @@ async function clickModelFamilyControlViaDom(job, family) {
     const controls = Array.from(document.querySelectorAll('button,[role="radio"],[role="menuitemradio"],[role="button"]'));
     const target = controls.find((element) => {
       const text = (element.innerText || element.getAttribute("aria-label") || element.textContent || "").replace(/\s+/g, " ").trim();
-      return text === prefix.trim() || text.startsWith(prefix);
+      return text === prefix.trim() || text.startsWith(prefix) || text.startsWith(prefix.trim());
     });
     if (!target) return { found: false };
     target.click();
@@ -911,12 +917,21 @@ async function openModelConfigurationViaDom(job) {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const readText = (element) => (element?.innerText || element?.getAttribute("aria-label") || element?.textContent || "").replace(/\s+/g, " ").trim();
     const hasConfigurationUi = () => Boolean(
-      document.querySelector('[role="dialog"] [role="radio"], [role="dialog"] [role="switch"], [role="dialog"] [role="combobox"]')
+      document.querySelector('[role="dialog"] [role="radio"], [role="dialog"] [role="switch"], [role="dialog"] [role="combobox"], [role="menu"] [role="menuitemradio"]')
     );
-    const findSelector = () => Array.from(document.querySelectorAll('button,[role="button"]')).find((element) =>
-      element.getAttribute("aria-label") === "Model selector" ||
-      element.getAttribute("data-testid") === "model-switcher-dropdown-button"
-    );
+    const findSelector = () => {
+      const original = Array.from(document.querySelectorAll('button,[role="button"]')).find((element) =>
+        element.getAttribute("aria-label") === "Model selector" ||
+        element.getAttribute("data-testid") === "model-switcher-dropdown-button"
+      );
+      if (original) return original;
+      // Fallback: find composer pill by class or text (new ChatGPT UI)
+      return Array.from(document.querySelectorAll('button')).find((element) => {
+        const text = (element.innerText || element.textContent || "").trim();
+        return element.classList.contains('__composer-pill') ||
+          ['Light', 'Standard', 'Extended', 'Heavy', 'Instant', 'Thinking', 'Pro'].includes(text);
+      });
+    };
     const findConfigure = () => Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], button, [role="button"]')).find(
       (element) => readText(element) === "Configure..."
     );
@@ -964,17 +979,36 @@ async function maybeClickLabeledEntry(job, label, options = {}) {
 }
 
 async function openEffortDropdown(job) {
-  const snapshot = await snapshotText(job);
   const effortLabels = new Set(["Light", "Standard", "Extended", "Heavy"]);
-  const entry = findEntry(
+  const findEffortControl = (snapshot) => findEntry(
     snapshot,
     (candidate) => candidate.kind === "combobox" && candidate.value && effortLabels.has(candidate.value) && !candidate.disabled,
   );
-  if (!entry) return false;
-  await clickRef(job, entry.ref);
-  return true;
-}
+  const findEffortSubmenu = (snapshot) => findEntry(
+    snapshot,
+    (candidate) => !candidate.disabled && candidate.kind === "menuitem" && candidate.ariaLabel === "Effort",
+  );
+  const clickEffortControl = async (snapshot) => {
+    const entry = findEffortControl(snapshot) || findEffortSubmenu(snapshot);
+    if (!entry) return false;
+    await clickRef(job, entry.ref);
+    return true;
+  };
 
+  const snapshot = await snapshotText(job);
+  if (await clickEffortControl(snapshot)) return true;
+
+  const configureEntry = findEntry(
+    snapshot,
+    (candidate) => !candidate.disabled && candidate.kind === "menuitem" && candidate.label === "Configure...",
+  );
+  if (!configureEntry) return false;
+
+  await clickRef(job, configureEntry.ref);
+  await agentBrowser(job, "wait", "800");
+  const configuredSnapshot = await snapshotText(job);
+  return clickEffortControl(configuredSnapshot);
+}
 async function setComposerText(job, text) {
   const availabilityDeadline = Date.now() + COMPOSER_SETTLE_TIMEOUT_MS;
   const rateLimitRecovery = { deadline: 0, lastReloadAt: 0, logged: false };
@@ -1076,7 +1110,7 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   const onAuthPath = typeof url === "string" && url.includes("/auth/");
   const hasComposer = snapshot.includes(`textbox "${CHATGPT_LABELS.composer}"`);
   const hasAddFiles = snapshot.includes(`button "${CHATGPT_LABELS.addFiles}"`);
-  const hasModelControl = snapshot.includes('button "Model selector"') || /button "(?:Instant|(?:(?:Light|Standard|Extended|Heavy) )?Thinking|(?:(?:Light|Standard|Extended|Heavy) )?Pro)(?:, click to remove)?"/i.test(snapshot);
+  const hasModelControl = snapshot.includes('button "Model selector"') || /button "(?:Instant|(?:(?:Light|Standard|Extended|Heavy) )?Thinking|(?:(?:Light|Standard|Extended|Heavy) )?Pro|Light|Standard|Extended|Heavy)(?:, click to remove)?"/i.test(snapshot);
 
   if (probe?.status === 401 || probe?.status === 403) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
@@ -1611,13 +1645,17 @@ async function configureModel(job) {
         throw new Error(`Could not open effort dropdown for requested effort: ${effortLabel}`);
       }
       await agentBrowser(job, "wait", "300");
-      await clickLabeledEntry(job, effortLabel, { kind: "option" });
+      try {
+        await clickLabeledEntry(job, effortLabel, { kind: "option" });
+      } catch {
+        await clickLabeledEntry(job, effortLabel, { kind: "menuitemradio" });
+      }
       await agentBrowser(job, "wait", "400");
       const effortSnapshot = await snapshotText(job);
       verificationSnapshot = effortSnapshot;
       const selectedEffort = findEntry(
         effortSnapshot,
-        (candidate) => candidate.kind === "combobox" && candidate.value === effortLabel && !candidate.disabled,
+        (candidate) => (candidate.kind === "combobox" || candidate.kind === "menuitemradio") && candidate.value === effortLabel && !candidate.disabled,
       );
       if (!selectedEffort && !effortSelectionVisible(effortSnapshot, effortLabel, job.selection.modelFamily)) {
         throw new Error(`Requested effort did not remain selected: ${effortLabel}`);
